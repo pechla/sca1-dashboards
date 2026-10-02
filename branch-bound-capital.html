@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Branch &amp; Bound Walkthrough - Capital Budgeting</title>
+<link rel="stylesheet" href="assets/dashboard.css">
+<script src="assets/branchbound.js"></script>
+</head>
+<body>
+<div class="dash-wrap">
+
+  <header class="dash-header">
+    <p class="dash-eyebrow">Optimization for SCM · Discrete Programming</p>
+    <h1 class="dash-title">Branch &amp; Bound, Step by Step</h1>
+    <p class="dash-subtitle">A pharma company picks which R&amp;D programs to fund -- watch the search tree grow as LP relaxations branch, bound, and prune.</p>
+  </header>
+
+  <!-- variant switch -->
+  <div class="bb-switch" id="variant-switch">
+    <button class="btn btn-primary" data-prob="basic">4 programs · one budget</button>
+    <button class="btn" data-prob="deps">6 programs · two-year · dependencies</button>
+  </div>
+
+  <!-- problem statement (collapsible) -->
+  <div class="panel collapsible collapsed" id="problem-panel" style="margin-bottom:16px">
+    <button class="panel-title toggle" id="problem-toggle" aria-expanded="false">
+      The problem <span class="chevron">▸</span>
+    </button>
+    <div class="problem" id="problem"></div>
+  </div>
+
+  <!-- sticky bar: controls + narration stay pinned while the panels below update -->
+  <div class="sticky-bar">
+    <div class="controls">
+      <button class="btn" id="btn-reset" title="Back to start">⏮ Reset</button>
+      <button class="btn" id="btn-prev">‹ Prev</button>
+      <button class="btn btn-primary" id="btn-next">Next ›</button>
+      <div class="progress-dots" id="dots"></div>
+      <span class="step-pill">Step <b id="step-now">1</b> / <span id="step-total">1</span></span>
+    </div>
+    <div class="narration">
+      <p class="narr-kicker" id="narr-kicker">Start</p>
+      <p class="narr-text" id="narr-text"></p>
+    </div>
+  </div>
+
+  <!-- main grid -->
+  <div class="dash-grid bb-grid">
+    <div class="panel">
+      <p class="panel-title">Search tree</p>
+      <div class="bb-tree-scroll"><svg class="bb-tree" id="tree" preserveAspectRatio="xMidYMin meet"></svg></div>
+      <div class="geo-legend">
+        <span class="lg"><span class="swatch dot-sw" style="background:var(--accent)"></span>branched (fractional)</span>
+        <span class="lg"><span class="swatch dot-sw" style="background:var(--good)"></span>incumbent</span>
+        <span class="lg"><span class="swatch dot-sw" style="background:var(--leave)"></span>pruned</span>
+        <span class="lg"><span class="swatch dot-sw" style="background:#f2616b"></span>infeasible</span>
+        <span class="lg"><span class="swatch dot-sw" style="background:var(--faint)"></span>unexplored</span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <p class="panel-title">Algorithm state</p>
+      <svg class="bb-bounds" id="bounds" viewBox="0 0 400 92" preserveAspectRatio="xMidYMid meet"></svg>
+      <div class="readout" id="stats"></div>
+      <div id="node-detail"></div>
+      <div id="incumbent-box"></div>
+    </div>
+  </div>
+
+  <p class="dash-footer">Use ← / → arrow keys to step · capital budgeting IP from “Optimization for Supply Chain Management”, Ch. 3</p>
+</div>
+
+<script>
+"use strict";
+
+/* ---------------------------------------------------------------------------
+   1.  The two binary programs (matches the textbook, Ch. 3)
+       All constraints are <=  (the prerequisite x6<=x4 is written x6 - x4 <= 0).
+       Coefficients match the script and Deck 2 (P1..P4: invest 4/9/5/7, value
+       9/12/15/11, budget 11; optimum P1 + P3 = 24). To run another instance,
+       only this PROBLEMS block needs to change; everything else regenerates.
+--------------------------------------------------------------------------- */
+const PROBLEMS = {
+  basic: {
+    name: "4 programs · one budget",
+    labels: ["Immuno-oncology antibody", "Cardiovascular", "Rare-disease / orphan", "Antiviral"],
+    objective: [9, 12, 15, 11],
+    constraints: [
+      { name: "Budget", coeffs: [4, 9, 5, 7], op: "≤", rhs: 11 },
+    ],
+  },
+  deps: {
+    name: "6 programs · two-year · dependencies",
+    labels: ["Immuno-onc (compound A)", "Cardiovascular", "Rare-disease / orphan",
+             "Antiviral (Phase II)", "Immuno-onc (compound B)", "Antiviral (Phase III)"],
+    objective: [9, 12, 15, 11, 13, 8],
+    constraints: [
+      { name: "Year-1 budget",   coeffs: [1, 5, 2, 2, 6, 2], op: "≤", rhs: 11 },
+      { name: "Year-2 budget",   coeffs: [3, 4, 3, 5, 2, 1], op: "≤", rhs: 11 },
+      { name: "P1/P5 exclusive", coeffs: [1, 0, 0, 0, 1, 0], op: "≤", rhs: 1 },
+      { name: "P6 needs P4",     coeffs: [0, 0, 0, -1, 0, 1], op: "≤", rhs: 0 },
+    ],
+  },
+};
+const OBJ_UNIT = "€", OBJ_SUFFIX = "m";
+
+/* ---------- formatting helpers ---------- */
+const SUBS = "₀₁₂₃₄₅₆₇₈₉";
+function sub(n) { return String(n).replace(/\d/g, d => SUBS[+d]); }
+function vname(i) { return "x" + sub(i + 1); }
+function fmt(v) {
+  if (v === null || v === undefined) return "–";
+  if (Math.abs(v) < 1e-9) return "0";
+  const r = Math.round(v * 100) / 100;
+  return Number.isInteger(r) ? String(r) : String(r);
+}
+function money(v) { return OBJ_UNIT + fmt(v) + OBJ_SUFFIX; }
+const isInt = v => Math.abs(v - Math.round(v)) < 1e-6;
+
+/* ---------------------------------------------------------------------------
+   2.  Live state -- the active problem, its trace, and the step list
+--------------------------------------------------------------------------- */
+let PROB, TRACE, STEPS, cur = 0;
+
+function fixStr(fix) {
+  const keys = Object.keys(fix).map(Number).sort((a, b) => a - b);
+  if (!keys.length) return "";
+  return keys.map(k => `${vname(k)} = ${fix[k]}`).join(", ");
+}
+function vecStr(sol) { return "(" + sol.map(fmt).join(", ") + ")"; }
+function fundedList(x) {
+  return x.map((v, i) => v > 0.5 ? "P" + (i + 1) : null).filter(Boolean);
+}
+
+/* ---------------------------------------------------------------------------
+   3.  Build the linear sequence of display steps from the trace events
+--------------------------------------------------------------------------- */
+function startSnap() {
+  return {
+    nodes: [{ id: 0, parent: null, depth: 0, branch: null, fix: {}, children: [],
+              status: "pending", obj: null, sol: null }],
+    incumbent: null,
+  };
+}
+
+function narrate(ev) {
+  const node = ev.snap.nodes[ev.nodeId];
+  const inc = ev.snap.incumbent;
+  switch (ev.type) {
+    case "solve": {
+      if (node.id === 0) {
+        const frac = node.sol.map((v, i) => isInt(v) ? null : vname(i)).filter(Boolean);
+        return { kicker: "Root · LP relaxation",
+          html: `Drop the 0/1 restriction (allow each <span class="mono">x ∈ [0,1]</span>) and solve the relaxation with simplex. ` +
+            `Bound <span class="mono">z = ${money(node.obj)}</span> at <span class="mono">${vecStr(node.sol)}</span>. ` +
+            (frac.length
+              ? `<span class="mono">${frac.join(", ")}</span> ${frac.length > 1 ? "are" : "is"} fractional -- this bound is the best <em>any</em> integer solution can reach.`
+              : `Already all-binary!`) };
+      }
+      return { kicker: "Solve LP relaxation",
+        html: `Subproblem with <span class="mono">${fixStr(node.fix)}</span>. Its LP relaxation gives bound ` +
+          `<span class="mono">z = ${money(node.obj)}</span> at <span class="mono">${vecStr(node.sol)}</span>.` };
+    }
+    case "branch": {
+      const bi = ev.branchVar;
+      return { kicker: "Branch", html:
+        `<span class="mono">${vname(bi)} = ${fmt(node.sol[bi])}</span> is fractional, so we <b>branch</b> on it: ` +
+        `two child subproblems, one forcing <span class="mono">${vname(bi)} = 1</span>, one forcing <span class="mono">${vname(bi)} = 0</span>.` };
+    }
+    case "incumbent":
+      return { kicker: "New incumbent", html:
+        `All variables are 0 or 1 -- a feasible integer solution! Its value <span class="mono">${money(node.obj)}</span> ` +
+        `${inc && inc.nodeId !== node.id ? "beats" : "is"} the best so far, so it becomes our <b>incumbent</b>: fund ` +
+        `<span class="mono">${fundedList(node.sol).join(", ") || "nothing"}</span>.` };
+    case "integer":
+      return { kicker: "Feasible -- no improvement", html:
+        `All-binary and feasible, but <span class="mono">${money(node.obj)} ≤ ${money(inc.obj)}</span> (current incumbent), ` +
+        `so it does not improve our best known solution.` };
+    case "prune":
+      return { kicker: "Prune by bound", html:
+        `This node's bound <span class="mono">${money(node.obj)} ≤ ${money(inc.obj)}</span> (incumbent). It cannot contain a ` +
+        `strictly better integer solution, so we <b>prune</b> it -- no need to branch further. <em>This is what saves B&amp;B from full enumeration.</em>` };
+    case "infeasible":
+      return { kicker: "Infeasible", html:
+        `Forcing <span class="mono">${fixStr(node.fix)}</span> violates the constraints -- the subproblem is <b>infeasible</b> and is pruned.` };
+  }
+}
+
+function buildSteps() {
+  const steps = [];
+  steps.push({
+    kicker: "Start",
+    html: `We solve this binary program by <b>branch &amp; bound</b>. Rounding the LP solution can give infeasible or ` +
+      `suboptimal answers, so instead we explore a tree of subproblems, using LP-relaxation bounds to prune branches ` +
+      `that cannot beat the best integer solution found so far. We begin at the <b>root</b>.`,
+    snap: startSnap(), focus: 0, kind: "start",
+  });
+
+  TRACE.events.forEach(ev => {
+    const n = narrate(ev);
+    steps.push({ kicker: n.kicker, html: n.html, snap: ev.snap, focus: ev.nodeId, kind: ev.type });
+  });
+
+  const opt = TRACE.optimal;
+  const finalSnap = TRACE.events[TRACE.events.length - 1].snap;
+  steps.push({
+    kicker: "Optimal",
+    html: `No unexplored node can beat the incumbent, so we stop. The optimum is <span class="mono">${money(opt.obj)}</span>: ` +
+      `fund <span class="mono">${fundedList(opt.x).join(", ")}</span>. Notice this need not be the highest-value programs individually -- ` +
+      `it is the best combination that fits the budget.`,
+    snap: finalSnap, focus: opt.nodeId, kind: "optimal",
+  });
+  return steps;
+}
+
+/* ---------------------------------------------------------------------------
+   4.  Renderers
+--------------------------------------------------------------------------- */
+function renderProblem() {
+  const n = PROB.objective.length;
+  let obj = PROB.objective.map((a, i) => `${i ? " + " : ""}${a}${vname(i)}`).join("");
+  let h = `<span class="lbl">maximize</span>  <span class="obj">z = ${obj}</span><br>`;
+  h += `<span class="lbl">subject to</span><br>`;
+  PROB.constraints.forEach(c => {
+    const terms = [];
+    c.coeffs.forEach((a, i) => {
+      if (a === 0) return;
+      const sign = a < 0 ? " − " : (terms.length ? " + " : "");
+      const mag = Math.abs(a) === 1 ? "" : Math.abs(a) + " ";
+      terms.push(`${sign}${mag}${vname(i)}`);
+    });
+    h += `&nbsp;&nbsp;&nbsp;${terms.join("")} ${c.op} ${c.rhs} <span class="lbl">(${c.name.toLowerCase()})</span><br>`;
+  });
+  h += `&nbsp;&nbsp;&nbsp;${Array.from({ length: n }, (_, i) => vname(i)).join(", ")} ∈ {0, 1}`;
+  document.getElementById("problem").innerHTML = h;
+}
+
+/* ---------- tree geometry ---------- */
+const TREE = { MARGIN: 16, BOXW: 116, BOXH: 50, HSP: 150, VSP: 92 };
+const STATUS_COLOR = {
+  pending: "var(--faint)", branched: "var(--accent)", incumbent: "var(--good)",
+  integer: "#7d8aa0", pruned: "var(--leave)", infeasible: "#f2616b",
+};
+
+function layoutTree(snap) {
+  const byId = {}; snap.nodes.forEach(nd => byId[nd.id] = nd);
+  const pos = {}; let slot = 0, maxDepth = 0;
+  (function place(id) {
+    const nd = byId[id];
+    maxDepth = Math.max(maxDepth, nd.depth);
+    const kids = nd.children.filter(c => byId[c] !== undefined);
+    if (!kids.length) { pos[id] = { col: slot++, depth: nd.depth }; return; }
+    kids.forEach(place);
+    pos[id] = { col: (pos[kids[0]].col + pos[kids[kids.length - 1]].col) / 2, depth: nd.depth };
+  })(0);
+  return { pos, byId, maxCol: Math.max(0, slot - 1), maxDepth };
+}
+
+function renderTree(step) {
+  const snap = step.snap;
+  const { pos, byId, maxCol, maxDepth } = layoutTree(snap);
+  const cx = id => TREE.MARGIN + TREE.BOXW / 2 + pos[id].col * TREE.HSP;
+  const cy = id => TREE.MARGIN + TREE.BOXH / 2 + pos[id].depth * TREE.VSP;
+  const W = TREE.MARGIN * 2 + TREE.BOXW + maxCol * TREE.HSP;
+  const H = TREE.MARGIN * 2 + TREE.BOXH + maxDepth * TREE.VSP;
+
+  let s = `<defs><filter id="nodeglow" x="-60%" y="-60%" width="220%" height="220%">
+    <feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+  </filter></defs>`;
+
+  // edges (draw first so boxes sit on top)
+  snap.nodes.forEach(nd => {
+    if (nd.parent === null) return;
+    const x1 = cx(nd.parent), y1 = cy(nd.parent) + TREE.BOXH / 2;
+    const x2 = cx(nd.id), y2 = cy(nd.id) - TREE.BOXH / 2;
+    const dim = nd.status === "pending" ? 0.4 : 0.85;
+    s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="var(--border-2)" stroke-width="1.6" opacity="${dim}"/>`;
+    // branch label
+    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+    const lbl = `${vname(nd.branch.var)}=${nd.branch.val}`;
+    s += `<rect x="${mx - 24}" y="${my - 10}" width="48" height="19" rx="5" fill="var(--panel-2)" stroke="var(--border)"/>`;
+    s += `<text x="${mx}" y="${my + 3}" fill="var(--muted)" font-size="11" text-anchor="middle" font-family="var(--font-mono)">${lbl}</text>`;
+  });
+
+  // nodes
+  snap.nodes.forEach(nd => {
+    const x = cx(nd.id), y = cy(nd.id);
+    const col = STATUS_COLOR[nd.status] || "var(--faint)";
+    const isFocus = nd.id === step.focus;
+    const dashed = (nd.status === "pruned" || nd.status === "infeasible") ? `stroke-dasharray="5 3"` : "";
+    const fill = nd.status === "incumbent" ? "rgba(95,217,138,0.12)"
+               : nd.id === TRACE.optimalNodeId && step.kind === "optimal" ? "rgba(95,217,138,0.18)"
+               : "var(--panel)";
+    const rx = x - TREE.BOXW / 2, ry = y - TREE.BOXH / 2;
+    if (isFocus)
+      s += `<rect x="${rx - 4}" y="${ry - 4}" width="${TREE.BOXW + 8}" height="${TREE.BOXH + 8}" rx="11" fill="none" stroke="${col}" stroke-width="1.5" opacity="0.55" filter="url(#nodeglow)"/>`;
+    s += `<rect x="${rx}" y="${ry}" width="${TREE.BOXW}" height="${TREE.BOXH}" rx="9" fill="${fill}" stroke="${col}" stroke-width="${isFocus ? 2.4 : 1.6}" ${dashed}/>`;
+
+    const top = nd.parent === null ? "root" : `${vname(nd.branch.var)} = ${nd.branch.val}`;
+    s += `<text x="${x}" y="${ry + 17}" fill="var(--muted)" font-size="11.5" text-anchor="middle" font-family="var(--font-mono)">${top}</text>`;
+    let mid;
+    if (nd.status === "pending") mid = `<text x="${x}" y="${ry + 36}" fill="var(--faint)" font-size="12" text-anchor="middle" font-family="var(--font-mono)">solving…</text>`;
+    else if (nd.status === "infeasible") mid = `<text x="${x}" y="${ry + 36}" fill="${col}" font-size="12.5" text-anchor="middle" font-family="var(--font-mono)">infeasible</text>`;
+    else {
+      mid = `<text x="${x}" y="${ry + 37}" fill="${nd.status === 'incumbent' ? 'var(--good)' : 'var(--text)'}" font-size="14" font-weight="650" text-anchor="middle" font-family="var(--font-mono)">z = ${fmt(nd.obj)}</text>`;
+    }
+    s += mid;
+  });
+
+  const svg = document.getElementById("tree");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.style.minWidth = Math.max(W, 360) + "px";
+  svg.style.height = H + "px";
+  svg.innerHTML = s;
+}
+
+/* ---------- bounds bar + stats ---------- */
+function renderBounds(step) {
+  const ceil = Math.ceil(TRACE.rootBound + 0.5);
+  const inc = step.snap.incumbent ? step.snap.incumbent.obj : 0;
+  const fnode = step.snap.nodes[step.focus];
+  const nb = fnode && fnode.obj != null ? fnode.obj : null;
+  const X0 = 12, X1 = 388, Y = 46, scale = v => X0 + (v / ceil) * (X1 - X0);
+
+  let s = "";
+  // track
+  s += `<line x1="${X0}" y1="${Y}" x2="${X1}" y2="${Y}" stroke="var(--border-2)" stroke-width="6" stroke-linecap="round"/>`;
+  // incumbent fill (lower bound on optimum)
+  if (inc > 0) s += `<line x1="${X0}" y1="${Y}" x2="${scale(inc)}" y2="${Y}" stroke="var(--good)" stroke-width="6" stroke-linecap="round"/>`;
+  // root bound ceiling tick
+  const rb = scale(TRACE.rootBound);
+  s += `<line x1="${rb}" y1="${Y - 12}" x2="${rb}" y2="${Y + 12}" stroke="var(--faint)" stroke-width="1.5" stroke-dasharray="3 3"/>`;
+  s += `<text x="${rb}" y="${Y + 28}" fill="var(--faint)" font-size="10.5" text-anchor="middle" font-family="var(--font-mono)">root ${fmt(TRACE.rootBound)}</text>`;
+  // current node bound caret
+  if (nb != null) {
+    const x = scale(nb);
+    s += `<polygon points="${x - 5},${Y - 16} ${x + 5},${Y - 16} ${x},${Y - 8}" fill="var(--accent)"/>`;
+    s += `<text x="${x}" y="${Y - 20}" fill="var(--accent)" font-size="10.5" text-anchor="middle" font-family="var(--font-mono)">node ${fmt(nb)}</text>`;
+  }
+  // incumbent marker
+  if (inc > 0) {
+    const x = scale(inc);
+    s += `<circle cx="${x}" cy="${Y}" r="5" fill="var(--good)" stroke="var(--bg)" stroke-width="1.5"/>`;
+  }
+  document.getElementById("bounds").innerHTML = s;
+
+  // stat tiles
+  const stats = document.getElementById("stats");
+  stats.innerHTML =
+    `<div class="stat"><div class="stat-label">Node bound</div><div class="stat-value">${nb != null ? money(nb) : "–"}</div></div>` +
+    `<div class="stat stat-obj"><div class="stat-label">Incumbent</div><div class="stat-value">${inc > 0 ? money(inc) : "–"}</div></div>` +
+    `<div class="stat"><div class="stat-label">Upper bound</div><div class="stat-value">${money(TRACE.rootBound)}</div></div>`;
+}
+
+function renderNodeDetail(step) {
+  const box = document.getElementById("node-detail");
+  const nd = step.snap.nodes[step.focus];
+  if (!nd || nd.sol === null) {
+    box.innerHTML = `<p class="panel-title" style="margin-top:18px">Current node</p>` +
+      `<p style="color:var(--muted);font-size:13.5px;margin:0">No relaxation solved yet.</p>`;
+    return;
+  }
+  let h = `<p class="panel-title" style="margin-top:18px">Current node · LP relaxation</p>`;
+  h += `<table class="tableau"><thead><tr><th class="basic-label">var</th><th>program</th><th class="rhs-col">value</th></tr></thead><tbody>`;
+  nd.sol.forEach((v, i) => {
+    const frac = !isInt(v);
+    h += `<tr><td class="basic-label">${vname(i)}</td>` +
+         `<td style="text-align:left;color:var(--muted)">P${i + 1} ${PROB.labels[i]}</td>` +
+         `<td class="rhs-col ${frac ? "col-enter" : ""}">${fmt(v)}${frac ? " ⟵ fractional" : ""}</td></tr>`;
+  });
+  h += `</tbody></table>`;
+  box.innerHTML = h;
+}
+
+function renderIncumbent(step) {
+  const box = document.getElementById("incumbent-box");
+  const inc = step.snap.incumbent;
+  let h = `<p class="panel-title" style="margin-top:18px">Incumbent (best integer so far)</p>`;
+  if (!inc) {
+    h += `<p style="color:var(--muted);font-size:13.5px;margin:0">None found yet -- no feasible integer solution discovered.</p>`;
+  } else {
+    const funded = fundedList(inc.x);
+    h += `<p style="margin:0;font-size:14px">Fund <span class="mono" style="color:var(--good)">${funded.join(", ") || "nothing"}</span> ` +
+         `for <span class="mono" style="color:var(--good)">${money(inc.obj)}</span>.</p>`;
+  }
+  box.innerHTML = h;
+}
+
+/* ---------------------------------------------------------------------------
+   5.  Step controller
+--------------------------------------------------------------------------- */
+function renderDots() {
+  let h = "";
+  for (let i = 0; i < STEPS.length; i++) {
+    const cls = i === cur ? "active" : (i < cur ? "done" : "");
+    h += `<span class="dot ${cls}"></span>`;
+  }
+  document.getElementById("dots").innerHTML = h;
+}
+
+function show(i) {
+  cur = Math.max(0, Math.min(STEPS.length - 1, i));
+  const step = STEPS[cur];
+  document.getElementById("narr-kicker").textContent = step.kicker;
+  document.getElementById("narr-text").innerHTML = step.html;
+  renderTree(step);
+  renderBounds(step);
+  renderNodeDetail(step);
+  renderIncumbent(step);
+  document.getElementById("step-now").textContent = cur + 1;
+  document.getElementById("btn-prev").disabled = cur === 0;
+  document.getElementById("btn-next").disabled = cur === STEPS.length - 1;
+  renderDots();
+}
+
+function loadProblem(key) {
+  PROB = PROBLEMS[key];
+  TRACE = BranchBound.solve(PROB);
+  STEPS = buildSteps();
+  cur = 0;
+  document.getElementById("step-total").textContent = STEPS.length;
+  renderProblem();
+  show(0);
+}
+
+function init() {
+  // variant switch
+  document.querySelectorAll("#variant-switch .btn").forEach(b => {
+    b.onclick = () => {
+      document.querySelectorAll("#variant-switch .btn").forEach(o => o.classList.remove("btn-primary"));
+      b.classList.add("btn-primary");
+      loadProblem(b.dataset.prob);
+    };
+  });
+
+  document.getElementById("btn-next").onclick  = () => show(cur + 1);
+  document.getElementById("btn-prev").onclick  = () => show(cur - 1);
+  document.getElementById("btn-reset").onclick = () => show(0);
+
+  const pPanel = document.getElementById("problem-panel");
+  const pToggle = document.getElementById("problem-toggle");
+  pToggle.onclick = () => {
+    const collapsed = pPanel.classList.toggle("collapsed");
+    pToggle.setAttribute("aria-expanded", String(!collapsed));
+    pToggle.querySelector(".chevron").textContent = collapsed ? "▸" : "▾";
+  };
+
+  document.addEventListener("keydown", e => {
+    if (e.key === "ArrowRight") show(cur + 1);
+    if (e.key === "ArrowLeft")  show(cur - 1);
+    if (e.key === "Home")       show(0);
+  });
+
+  loadProblem("basic");
+}
+init();
+</script>
+</body>
+</html>

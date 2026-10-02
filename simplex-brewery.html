@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Simplex Walkthrough - Brewery LP</title>
+<link rel="stylesheet" href="assets/dashboard.css">
+<script src="assets/simplex.js"></script>
+</head>
+<body>
+<div class="dash-wrap">
+
+  <header class="dash-header">
+    <p class="dash-eyebrow">Optimization for SCM · Linear Programming</p>
+    <h1 class="dash-title">The Simplex Method, Step by Step</h1>
+    <p class="dash-subtitle">A craft brewery maximizes weekly contribution margin -- watch the tableau pivot and the corner point walk the feasible region.</p>
+  </header>
+
+  <!-- problem statement (collapsible) -->
+  <div class="panel collapsible collapsed" id="problem-panel" style="margin-bottom:16px">
+    <button class="panel-title toggle" id="problem-toggle" aria-expanded="false">
+      The problem and the algorithm <span class="chevron">▸</span>
+    </button>
+    <div class="problem" id="problem"></div>
+    <div class="algo" id="algo">
+      <p class="algo-title">One simplex iteration (Ch. 2)</p>
+      <ol>
+        <li><b>Entering variable.</b> Pick the most negative coefficient in the z-row; that variable enters the basis. If no coefficient is negative, the current solution is optimal and we stop.</li>
+        <li><b>Leaving variable.</b> Minimum ratio test: divide each RHS by the positive entry in the entering column. The row with the smallest ratio is the pivot row, its basic variable leaves, and the entry where pivot row and entering column meet is the pivot element.</li>
+        <li><b>Pivot.</b> Divide the pivot row by the pivot element, then add or subtract multiples of it from every other row, including the z-row, until the entering column is a unit column. Back to step 1.</li>
+      </ol>
+    </div>
+  </div>
+
+  <!-- sticky bar: controls + narration stay pinned while the panels below update -->
+  <div class="sticky-bar">
+    <div class="controls">
+      <button class="btn" id="btn-reset" title="Back to start">⏮ Reset</button>
+      <button class="btn" id="btn-prev">‹ Prev</button>
+      <button class="btn btn-primary" id="btn-next">Next ›</button>
+      <div class="progress-dots" id="dots"></div>
+      <span class="step-pill">Step <b id="step-now">1</b> / <span id="step-total">1</span></span>
+    </div>
+    <div class="narration">
+      <p class="narr-kicker" id="narr-kicker">Start</p>
+      <p class="narr-text" id="narr-text"></p>
+    </div>
+  </div>
+
+  <!-- main grid -->
+  <div class="dash-grid">
+    <div class="panel">
+      <p class="panel-title">Simplex tableau</p>
+      <div class="tableau-scroll"><div id="tableau"></div></div>
+      <div class="readout" id="readout"></div>
+      <div id="shadow-box"></div>
+    </div>
+
+    <div class="panel">
+      <p class="panel-title">Feasible region</p>
+      <svg class="geo-svg" id="geo" viewBox="0 0 470 430" preserveAspectRatio="xMidYMid meet"></svg>
+      <div class="geo-legend">
+        <span class="lg"><span class="swatch" style="background:var(--accent)"></span>feasible region</span>
+        <span class="lg"><span class="swatch" style="background:var(--leave)"></span>isoprofit z=const</span>
+        <span class="lg"><span class="swatch dot-sw" style="background:var(--good)"></span>current vertex</span>
+        <span class="lg"><span class="swatch" style="background:var(--faint)"></span>constraints</span>
+      </div>
+    </div>
+  </div>
+
+  <p class="dash-footer">Use ← / → arrow keys to step · brewery LP from “Optimization for Supply Chain Management”, Ch. 2</p>
+</div>
+
+<script>
+"use strict";
+
+/* ---------------------------------------------------------------------------
+   1.  The brewery LP  (matches the textbook, Ch. 2)
+       max 30 x1 + 20 x2   s.t.  hops, tank time, malt, two demand caps
+--------------------------------------------------------------------------- */
+const CONFIG = {
+  varNames: ["x1", "x2"],
+  objective: [30, 20],
+  constraints: [
+    { name: "Hops",        coeffs: [3, 1], rhs: 60 },
+    { name: "Tank time",   coeffs: [1, 2], rhs: 50 },
+    { name: "IPA demand",  coeffs: [1, 0], rhs: 18 },
+    { name: "Lager demand",coeffs: [0, 1], rhs: 20 },
+  ],
+  view: { xMax: 22, yMax: 24 },
+};
+const OBJ_UNIT = "€";
+
+/* ---------------------------------------------------------------------------
+   2.  Solve & record the trace
+--------------------------------------------------------------------------- */
+const TRACE = Simplex.solve(CONFIG);
+const POLY  = Simplex.feasiblePolygon(CONFIG);
+const Z_ROW = TRACE.m;          // index of objective row in any tableau
+const RHS   = TRACE.rhsCol;
+const NS    = TRACE.nStruct;
+
+/* ---------- number / name formatting ---------- */
+const SUBS = "₀₁₂₃₄₅₆₇₈₉";
+function pretty(name) {            // "x1" -> "x₁", "s12" -> "s₁₂"
+  return name.replace(/\d/g, d => SUBS[+d]);
+}
+function fmt(v) {
+  if (Math.abs(v) < 1e-9) return "0";
+  let r = Math.round(v * 1e4) / 1e4;
+  return String(r);
+}
+function fmtRatio(v) {
+  if (v === null) return "–";
+  return (Math.round(v * 100) / 100).toString();
+}
+
+/* ---------------------------------------------------------------------------
+   3.  Build the linear sequence of display steps from the trace
+--------------------------------------------------------------------------- */
+function vlabel(pt) { return "(" + pt.map(fmt).join(", ") + ")"; }
+
+function buildSteps() {
+  const steps = [];
+  const visited = [TRACE.initial.vertex.slice()];   // accumulating path
+
+  // step 0 -- start
+  steps.push({
+    kicker: "Start",
+    html: `Begin at the origin <span class="mono">x₁ = x₂ = 0</span> -- brew nothing. ` +
+          `The ${TRACE.m} slacks are basic and equal the right-hand sides, and the objective is ` +
+          `<span class="mono">z = 0</span>. Each negative z-row coefficient shows how much z would rise per unit of that variable.`,
+    tableau: TRACE.initial.tableau,
+    basis: TRACE.initial.basis,
+    vertex: TRACE.initial.vertex,
+    path: visited.slice(),
+    z: TRACE.initial.z,
+    hl: {},
+  });
+
+  TRACE.iterations.forEach((it, k) => {
+    const n = k + 1;
+    const enterCoeff = it.tableauBefore[Z_ROW][it.enterCol];
+
+    // (a) choose entering variable
+    steps.push({
+      kicker: `Iteration ${n} · entering variable`,
+      html: `The most negative z-row coefficient is <span class="mono">${fmt(enterCoeff)}</span> ` +
+            `on <span class="mono">${pretty(it.enterVar)}</span>, so <span class="mono">${pretty(it.enterVar)}</span> ` +
+            `<b>enters</b> the basis -- increasing it raises z the fastest. Its column is highlighted.`,
+      tableau: it.tableauBefore, basis: it.basisBefore, vertex: it.vertexBefore,
+      path: visited.slice(), z: it.zBefore,
+      hl: { enterCol: it.enterCol },
+    });
+
+    // (b) ratio test → leaving variable
+    const ratioParts = it.ratios.map((r, i) => {
+      if (r === null) return null;
+      return `${pretty(TRACE.allNames[it.basisBefore[i]])}: ${fmt(it.tableauBefore[i][RHS])}/${fmt(it.tableauBefore[i][it.enterCol])} = ${fmtRatio(r)}`;
+    }).filter(Boolean);
+    steps.push({
+      kicker: `Iteration ${n} · ratio test`,
+      html: `Minimum-ratio test on the <span class="mono">${pretty(it.enterVar)}</span> column ` +
+            `(RHS ÷ positive entry): ${ratioParts.map(p=>`<span class="mono">${p}</span>`).join(", ")}. ` +
+            `The smallest is <span class="mono">${fmtRatio(it.minRatio)}</span>, so ` +
+            `<span class="mono">${pretty(it.leaveVar)}</span> <b>leaves</b>. The circled cell is the pivot.`,
+      tableau: it.tableauBefore, basis: it.basisBefore, vertex: it.vertexBefore,
+      path: visited.slice(), z: it.zBefore,
+      hl: { enterCol: it.enterCol, leaveRow: it.leaveRow, pivot: it.pivot, ratios: it.ratios },
+    });
+
+    // (b2) row operations needed for the pivot
+    const pivEl = it.tableauBefore[it.leaveRow][it.enterCol];
+    const pr = it.leaveRow + 1;
+    steps.push({
+      kicker: `Iteration ${n} · row operations`,
+      html: `To make the <span class="mono">${pretty(it.enterVar)}</span> column a unit column, ` +
+            (Math.abs(pivEl - 1) > 1e-9
+              ? `first divide the pivot row by the pivot element <span class="mono">${fmt(pivEl)}</span>, then `
+              : `the pivot row stays as it is (pivot element 1); `) +
+            `add or subtract the right multiple of it from every other row, including the z-row. ` +
+            `The last column lists the operation for each row` +
+            (Math.abs(pivEl - 1) > 1e-9 ? ` (<span class="mono">R${pr}</span> is the pivot row <i>after</i> the division).` : `.`),
+      tableau: it.tableauBefore, basis: it.basisBefore, vertex: it.vertexBefore,
+      path: visited.slice(), z: it.zBefore,
+      hl: { enterCol: it.enterCol, leaveRow: it.leaveRow, pivot: it.pivot, ratios: it.ratios, rowOps: true },
+    });
+
+    // (c) pivot -- move to the new corner
+    visited.push(it.vertexAfter.slice());
+    steps.push({
+      kicker: `Iteration ${n} · pivot`,
+      html: `After pivoting, <span class="mono">${pretty(it.enterVar)}</span> is basic. ` +
+            `We jump to the corner <span class="mono">${vlabel(it.vertexAfter)}</span> and z rises to ` +
+            `<span class="mono">${OBJ_UNIT}${fmt(it.zAfter)}</span>.`,
+      tableau: it.tableauAfter, basis: it.basisAfter, vertex: it.vertexAfter,
+      path: visited.slice(), z: it.zAfter,
+      hl: { newCol: it.enterCol },
+    });
+  });
+
+  // final -- optimal + shadow prices
+  const opt = TRACE.optimal;
+  steps.push({
+    kicker: "Optimal",
+    html: `All z-row coefficients are now <span class="mono">≥ 0</span> -- no variable can improve z, so we stop. ` +
+          `Optimal plan: brew <span class="mono">${fmt(opt.vertex[0])}</span> hl IPA and ` +
+          `<span class="mono">${fmt(opt.vertex[1])}</span> hl Lager for a weekly margin of ` +
+          `<span class="mono">${OBJ_UNIT}${fmt(opt.z)}</span>. The slack columns of the z-row are the shadow prices ↓`,
+    tableau: opt.tableau, basis: opt.basis, vertex: opt.vertex,
+    path: visited.slice(), z: opt.z,
+    hl: {}, shadow: opt.shadowPrices,
+  });
+
+  return steps;
+}
+
+const STEPS = buildSteps();
+
+/* ---------------------------------------------------------------------------
+   4.  Renderers
+--------------------------------------------------------------------------- */
+function renderProblem() {
+  const c = CONFIG;
+  let h = `<span class="lbl">maximize</span>  <span class="obj">z = ${c.objective[0]} x₁ + ${c.objective[1]} x₂</span><br>`;
+  h += `<span class="lbl">subject to</span><br>`;
+  c.constraints.forEach(con => {
+    const terms = [];
+    con.coeffs.forEach((a, i) => { if (a !== 0) terms.push(`${a === 1 ? "" : a} x${SUBS[i+1]}`); });
+    h += `&nbsp;&nbsp;&nbsp;${terms.join(" + ")} ≤ ${con.rhs} <span class="lbl">(${con.name.toLowerCase()})</span><br>`;
+  });
+  h += `&nbsp;&nbsp;&nbsp;x₁, x₂ ≥ 0`;
+  document.getElementById("problem").innerHTML = h;
+}
+
+function renderTableau(step) {
+  const T = step.tableau, basis = step.basis, hl = step.hl;
+  const names = TRACE.allNames;
+  const showRatios = !!hl.ratios;
+  const showOps = !!hl.rowOps;
+  const minRow = (() => {
+    if (!hl.ratios) return -1;
+    let mr = -1, mv = Infinity;
+    hl.ratios.forEach((r, i) => { if (r !== null && r < mv - 1e-9) { mv = r; mr = i; } });
+    return mr;
+  })();
+
+  // row operation that the coming pivot applies to row i (null = no change)
+  const rowOp = (i, label) => {
+    const p = hl.pivot.row, c = hl.pivot.col, piv = T[p][c];
+    if (i === p) return `R${p + 1} ÷ ${fmt(piv)}`;
+    const a = T[i][c];
+    if (Math.abs(a) < 1e-9) return null;
+    const k = Math.abs(a);
+    const coef = Math.abs(k - 1) < 1e-9 ? "" : fmt(k) + "·";
+    return `${label} ${a > 0 ? "-" : "+"} ${coef}R${p + 1}`;
+  };
+  const opCell = (i, label) => {
+    const op = rowOp(i, label);
+    if (op === null) return '<td class="op-col op-none">–</td>';
+    return `<td class="op-col ${i === hl.pivot.row ? "op-pivot" : ""}">${op}</td>`;
+  };
+
+  let h = '<table class="tableau"><thead><tr>';
+  h += '<th class="basic-label">Basic</th>';
+  names.forEach((nm, j) => {
+    const cls = (j === hl.enterCol) ? "col-enter" : "";
+    h += `<th class="${cls}">${pretty(nm)}</th>`;
+  });
+  h += '<th class="rhs-col">RHS</th>';
+  if (showRatios) h += '<th>ratio</th>';
+  if (showOps) h += '<th>row op</th>';
+  h += '</tr></thead><tbody>';
+
+  for (let i = 0; i < TRACE.m; i++) {
+    const isLeave = (i === hl.leaveRow);
+    h += '<tr>';
+    h += `<td class="basic-label">${pretty(names[basis[i]])}</td>`;
+    for (let j = 0; j < names.length; j++) {
+      let cls = [];
+      if (j === hl.enterCol) cls.push("col-enter");
+      if (isLeave) cls.push("row-leave");
+      if (hl.pivot && hl.pivot.row === i && hl.pivot.col === j) cls = ["pivot-cell"];
+      h += `<td class="${cls.join(" ")}">${fmt(T[i][j])}</td>`;
+    }
+    h += `<td class="rhs-col ${isLeave ? "row-leave" : ""}">${fmt(T[i][RHS])}</td>`;
+    if (showRatios) {
+      const r = hl.ratios[i];
+      if (r === null) h += '<td class="ratio-col ratio-skip">–</td>';
+      else h += `<td class="ratio-col ${i === minRow ? "min-ratio" : ""}">${fmtRatio(r)}</td>`;
+    }
+    if (showOps) h += opCell(i, `R${i + 1}`);
+    h += '</tr>';
+  }
+  // z-row
+  h += '<tr class="z-row"><td class="basic-label">z</td>';
+  for (let j = 0; j < names.length; j++) {
+    const cls = (j === hl.enterCol) ? "col-enter" : "";
+    h += `<td class="${cls}">${fmt(T[Z_ROW][j])}</td>`;
+  }
+  h += `<td class="rhs-col">${fmt(T[Z_ROW][RHS])}</td>`;
+  if (showRatios) h += '<td></td>';
+  if (showOps) h += opCell(Z_ROW, "z");
+  h += '</tr></tbody></table>';
+
+  document.getElementById("tableau").innerHTML = h;
+}
+
+function renderReadout(step) {
+  const v = step.vertex;
+  let h = "";
+  h += `<div class="stat"><div class="stat-label">IPA  x₁</div><div class="stat-value">${fmt(v[0])}</div></div>`;
+  h += `<div class="stat"><div class="stat-label">Lager  x₂</div><div class="stat-value">${fmt(v[1])}</div></div>`;
+  h += `<div class="stat stat-obj"><div class="stat-label">Margin z</div><div class="stat-value">${OBJ_UNIT}${fmt(step.z)}</div></div>`;
+  document.getElementById("readout").innerHTML = h;
+}
+
+function renderShadow(step) {
+  const box = document.getElementById("shadow-box");
+  if (!step.shadow) { box.innerHTML = ""; return; }
+  let h = '<table class="shadow"><thead><tr><th>Constraint</th><th>Slack</th><th style="text-align:right">Shadow price</th></tr></thead><tbody>';
+  step.shadow.forEach(sp => {
+    const binding = Math.abs(sp.price) > 1e-7;
+    h += `<tr class="${binding ? "binding" : ""}">` +
+         `<td>${sp.name}</td><td style="font-family:var(--font-mono)">${pretty(sp.slack)}</td>` +
+         `<td class="price ${binding ? "" : "zero"}">${OBJ_UNIT}${fmt(sp.price)}</td></tr>`;
+  });
+  h += '</tbody></table>';
+  box.innerHTML = '<p class="panel-title" style="margin-top:18px">Shadow prices</p>' + h;
+}
+
+/* ---------- geometry ---------- */
+const GEO = { W: 470, H: 430, L: 46, R: 18, T: 16, B: 38 };
+function sx(x) { return GEO.L + (x / CONFIG.view.xMax) * (GEO.W - GEO.L - GEO.R); }
+function sy(y) { return GEO.T + (GEO.H - GEO.T - GEO.B) - (y / CONFIG.view.yMax) * (GEO.H - GEO.T - GEO.B); }
+
+function renderGeometry(step) {
+  const xMax = CONFIG.view.xMax, yMax = CONFIG.view.yMax;
+  const svg = document.getElementById("geo");
+  let s = "";
+
+  // defs: clip + glow
+  s += `<defs>
+    <clipPath id="plot"><rect x="${GEO.L}" y="${GEO.T}" width="${GEO.W-GEO.L-GEO.R}" height="${GEO.H-GEO.T-GEO.B}"/></clipPath>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="3.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>`;
+
+  // grid + ticks
+  const stepX = 5, stepY = 5;
+  for (let gx = 0; gx <= xMax; gx += stepX) {
+    s += `<line x1="${sx(gx)}" y1="${sy(0)}" x2="${sx(gx)}" y2="${GEO.T}" stroke="#1d2733" stroke-width="1"/>`;
+    s += `<text x="${sx(gx)}" y="${sy(0)+16}" fill="#5a6779" font-size="10" text-anchor="middle" font-family="var(--font-mono)">${gx}</text>`;
+  }
+  for (let gy = 0; gy <= yMax; gy += stepY) {
+    s += `<line x1="${GEO.L}" y1="${sy(gy)}" x2="${GEO.W-GEO.R}" y2="${sy(gy)}" stroke="#1d2733" stroke-width="1"/>`;
+    s += `<text x="${GEO.L-8}" y="${sy(gy)+3}" fill="#5a6779" font-size="10" text-anchor="end" font-family="var(--font-mono)">${gy}</text>`;
+  }
+
+  // feasible polygon
+  if (POLY.length >= 3) {
+    const pts = POLY.map(p => `${sx(p[0])},${sy(p[1])}`).join(" ");
+    s += `<polygon points="${pts}" fill="rgba(45,212,191,0.10)" stroke="var(--accent)" stroke-width="1.6"/>`;
+  }
+
+  // constraint lines (clipped)
+  s += `<g clip-path="url(#plot)">`;
+  CONFIG.constraints.forEach(con => {
+    const [a, b] = con.coeffs, c = con.rhs;
+    let p1, p2;
+    if (Math.abs(b) > 1e-9) {            // y = (c - a x)/b ; sample x=0..xMax
+      p1 = [0, c / b]; p2 = [xMax, (c - a * xMax) / b];
+    } else {                              // vertical x = c/a
+      p1 = [c / a, 0]; p2 = [c / a, yMax];
+    }
+    s += `<line x1="${sx(p1[0])}" y1="${sy(p1[1])}" x2="${sx(p2[0])}" y2="${sy(p2[1])}" stroke="#3a4757" stroke-width="1.2" stroke-dasharray="4 3"/>`;
+  });
+
+  // isoprofit line at current z
+  if (step.z > 1e-9) {
+    const [c1, c2] = CONFIG.objective, z = step.z;
+    let p1, p2;
+    if (Math.abs(c2) > 1e-9) { p1 = [0, z / c2]; p2 = [xMax, (z - c1 * xMax) / c2]; }
+    else { p1 = [z / c1, 0]; p2 = [z / c1, yMax]; }
+    s += `<line x1="${sx(p1[0])}" y1="${sy(p1[1])}" x2="${sx(p2[0])}" y2="${sy(p2[1])}" stroke="var(--leave)" stroke-width="1.8" stroke-dasharray="6 4" opacity="0.9"/>`;
+  }
+  s += `</g>`;
+
+  // visited path
+  if (step.path.length >= 2) {
+    const pts = step.path.map(p => `${sx(p[0])},${sy(p[1])}`).join(" ");
+    s += `<polyline points="${pts}" fill="none" stroke="var(--accent-2)" stroke-width="2.2" opacity="0.85"/>`;
+    step.path.slice(0, -1).forEach(p => {
+      s += `<circle cx="${sx(p[0])}" cy="${sy(p[1])}" r="3.4" fill="#0d1117" stroke="var(--accent-2)" stroke-width="1.8"/>`;
+    });
+  }
+
+  // current vertex
+  const v = step.vertex;
+  s += `<circle cx="${sx(v[0])}" cy="${sy(v[1])}" r="7" fill="var(--good)" filter="url(#glow)"/>`;
+  s += `<circle cx="${sx(v[0])}" cy="${sy(v[1])}" r="7" fill="none" stroke="#0d1117" stroke-width="1.5"/>`;
+
+  // axis titles
+  s += `<text x="${GEO.W-GEO.R}" y="${sy(0)+30}" fill="var(--muted)" font-size="12" text-anchor="end" font-style="italic">x₁ - IPA (hl)</text>`;
+  s += `<text x="${GEO.L-30}" y="${GEO.T+4}" fill="var(--muted)" font-size="12" text-anchor="start" font-style="italic">x₂ - Lager (hl)</text>`;
+
+  svg.innerHTML = s;
+}
+
+/* ---------------------------------------------------------------------------
+   5.  Step controller
+--------------------------------------------------------------------------- */
+let cur = 0;
+
+function renderDots() {
+  let h = "";
+  for (let i = 0; i < STEPS.length; i++) {
+    const cls = i === cur ? "active" : (i < cur ? "done" : "");
+    h += `<span class="dot ${cls}"></span>`;
+  }
+  document.getElementById("dots").innerHTML = h;
+}
+
+function show(i) {
+  cur = Math.max(0, Math.min(STEPS.length - 1, i));
+  const step = STEPS[cur];
+  document.getElementById("narr-kicker").textContent = step.kicker;
+  document.getElementById("narr-text").innerHTML = step.html;
+  renderTableau(step);
+  renderReadout(step);
+  renderShadow(step);
+  renderGeometry(step);
+  document.getElementById("step-now").textContent = cur + 1;
+  document.getElementById("btn-prev").disabled = cur === 0;
+  document.getElementById("btn-next").disabled = cur === STEPS.length - 1;
+  renderDots();
+}
+
+function init() {
+  renderProblem();
+  document.getElementById("step-total").textContent = STEPS.length;
+  document.getElementById("btn-next").onclick  = () => show(cur + 1);
+  document.getElementById("btn-prev").onclick  = () => show(cur - 1);
+  document.getElementById("btn-reset").onclick = () => show(0);
+
+  const pPanel = document.getElementById("problem-panel");
+  const pToggle = document.getElementById("problem-toggle");
+  pToggle.onclick = () => {
+    const collapsed = pPanel.classList.toggle("collapsed");
+    pToggle.setAttribute("aria-expanded", String(!collapsed));
+    pToggle.querySelector(".chevron").textContent = collapsed ? "▸" : "▾";
+  };
+
+  document.addEventListener("keydown", e => {
+    if (e.key === "ArrowRight") show(cur + 1);
+    if (e.key === "ArrowLeft")  show(cur - 1);
+    if (e.key === "Home")       show(0);
+  });
+  show(0);
+}
+init();
+</script>
+</body>
+</html>

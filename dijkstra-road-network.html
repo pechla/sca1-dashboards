@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dijkstra Walkthrough - Road Network</title>
+<link rel="stylesheet" href="assets/dashboard.css">
+<script src="assets/dijkstra.js"></script>
+</head>
+<body>
+<div class="dash-wrap">
+
+  <header class="dash-header">
+    <p class="dash-eyebrow">Optimization for SCM · Network Flow Models</p>
+    <h1 class="dash-title">Dijkstra's Algorithm, Step by Step <span class="dj-badge" id="badge">script instance</span></h1>
+    <p class="dash-subtitle">The shortest route from town A to town E -- watch the label table fill in one relaxation at a time, exactly as you would on paper.</p>
+  </header>
+
+  <!-- network editor (collapsible) -->
+  <div class="panel collapsible collapsed" id="editor-panel" style="margin-bottom:16px">
+    <button class="panel-title toggle" id="editor-toggle" aria-expanded="false">
+      Edit the network <span class="chevron">▸</span>
+    </button>
+    <div class="dj-editor" id="editor"></div>
+  </div>
+
+  <!-- sticky bar: controls + narration stay pinned while the panels below update -->
+  <div class="sticky-bar">
+    <div class="controls">
+      <button class="btn" id="btn-reset" title="Back to start">⏮ Reset</button>
+      <button class="btn" id="btn-prev">‹ Prev</button>
+      <button class="btn btn-primary" id="btn-next">Next ›</button>
+      <div class="progress-dots" id="dots"></div>
+      <span class="step-pill">Step <b id="step-now">1</b> / <span id="step-total">1</span></span>
+    </div>
+    <div class="narration">
+      <p class="narr-kicker" id="narr-kicker">Start</p>
+      <p class="narr-text" id="narr-text"></p>
+    </div>
+  </div>
+
+  <!-- main grid -->
+  <div class="dash-grid">
+    <div class="panel">
+      <p class="panel-title">Road network</p>
+      <svg class="dj-net" id="net" viewBox="0 0 620 320" preserveAspectRatio="xMidYMid meet"></svg>
+      <div class="geo-legend">
+        <span class="lg"><span class="swatch dot-sw" style="background:var(--accent)"></span>finalized</span>
+        <span class="lg"><span class="swatch dot-sw" style="background:var(--panel);border:2px solid var(--accent)"></span>tentative label</span>
+        <span class="lg"><span class="swatch dot-sw" style="background:var(--panel);border:2px solid var(--faint)"></span>unreached (∞)</span>
+        <span class="lg"><span class="swatch" style="background:var(--enter);height:3px"></span>road being checked</span>
+        <span class="lg"><span class="swatch" style="background:var(--accent);height:3px"></span>current best route in</span>
+        <span class="lg"><span class="swatch" style="background:var(--good);height:3px"></span>shortest route</span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <p class="panel-title">Label table <span class="dj-tblnote">(script Table 4.7 -- bold: finalized at the next step)</span></p>
+      <div class="tableau-scroll"><table class="tableau" id="labels"></table></div>
+      <div class="readout" id="stats"></div>
+      <div id="route-box"></div>
+    </div>
+  </div>
+
+  <p class="dash-footer">Use ← / → arrow keys to step · road network from “Optimization for Supply Chain Management”, §4.5.1, Table 4.7</p>
+</div>
+
+<script>
+"use strict";
+
+/* ---------------------------------------------------------------------------
+   1.  The script's road network (§4.5, Figure 4.6). Node positions mirror the
+       figure. Only this block needs to change to run another network.
+--------------------------------------------------------------------------- */
+const DEFAULT = {
+  nodes: [
+    { id: "A", x: 70,  y: 160 },
+    { id: "C", x: 250, y: 50  },
+    { id: "B", x: 250, y: 270 },
+    { id: "D", x: 430, y: 160 },
+    { id: "E", x: 570, y: 160 },
+  ],
+  edges: [
+    { u: "A", v: "B", w: 4  },
+    { u: "A", v: "C", w: 2  },
+    { u: "C", v: "B", w: 1  },
+    { u: "B", v: "D", w: 5  },
+    { u: "C", v: "D", w: 8  },
+    { u: "C", v: "E", w: 10 },
+    { u: "D", v: "E", w: 2  },
+  ],
+  source: "A",
+  target: "E",
+};
+// column order of the label table = alphabetical, as in the script
+const COLS = DEFAULT.nodes.map(n => n.id).sort();
+
+/* ---------- helpers ---------- */
+const INF = Infinity;
+const fmt = v => (v === INF || v === null || v === undefined) ? "∞" : String(v);
+const mono = s => `<span class="mono">${s}</span>`;
+function listWithLabels(nodes, dist) { return nodes.map(n => `${n} (${fmt(dist[n])})`).join(", "); }
+function joinAnd(arr) {
+  if (arr.length <= 1) return arr.join("");
+  return arr.slice(0, -1).join(", ") + " and " + arr[arr.length - 1];
+}
+function edgeKey(a, b) { return a < b ? a + b : b + a; }
+function clone(obj) { return JSON.parse(JSON.stringify(obj)); }
+
+/* ---------------------------------------------------------------------------
+   2.  Live state
+--------------------------------------------------------------------------- */
+let NET, TRACE, STEPS, cur = 0;
+const POS = {}; DEFAULT.nodes.forEach(n => POS[n.id] = { x: n.x, y: n.y });
+
+function isDefault() {
+  return NET.source === DEFAULT.source && NET.target === DEFAULT.target &&
+    NET.edges.every((e, i) => e.w === DEFAULT.edges[i].w && !e.closed);
+}
+
+/* ---------------------------------------------------------------------------
+   3.  Build the linear sequence of display steps from the trace events.
+       Each step carries: the table rows so far, a highlight spec, and the
+       snapshot (dist / pred / finalized) for the network drawing.
+--------------------------------------------------------------------------- */
+function narrate(ev, k) {
+  const s = NET.source, t = NET.target;
+  switch (ev.type) {
+    case "pick": {
+      if (ev.node === s) {
+        return { kicker: "Pick minimum · finalize " + s, html:
+          `Only ${mono(s)} has a finite label, so it is finalized at distance ${mono("0")}. ` +
+          `Next we look at every road leaving it.` };
+      }
+      const tie = ev.tie.length
+        ? ` It ties with ${mono(ev.tie.join(", "))}; we take the first in alphabetical order -- any choice is correct.` : "";
+      return { kicker: `Pick minimum · finalize ${ev.node}`, html:
+        `Unfinalized nodes with a label: ${mono(listWithLabels(ev.candidates, ev.snap.dist))}. The smallest is ${mono(ev.node + " (" + ev.d + ")")}, ` +
+        `so ${mono(ev.node)} is <b>finalized</b>: no other route can beat ${ev.d}, because any alternative would already be at least ` +
+        `${ev.d} long before it reached another unfinalized node.${tie}` };
+    }
+    case "relax": {
+      const skip = ev.skipped.length
+        ? ` (The road${ev.skipped.length > 1 ? "s" : ""} back to ${mono(ev.skipped.join(", "))} ${ev.skipped.length > 1 ? "are" : "is"} ignored: already finalized.)` : "";
+      const dFrom = ev.snap.dist[ev.from];
+      if (ev.improved) {
+        return { kicker: `Relax ${ev.from} → ${ev.to}`, html:
+          `From ${mono(ev.from + " (" + dFrom + ")")} the road to ${mono(ev.to)} has length ${mono(ev.w)}: ` +
+          `${mono(dFrom + " + " + ev.w + " = " + ev.new + " < " + fmt(ev.old))}, so ${mono(ev.to)}'s label drops to <b>${ev.new}</b> ` +
+          `and its predecessor becomes ${mono(ev.from)}.${skip}` };
+      }
+      return { kicker: `Relax ${ev.from} → ${ev.to} · no improvement`, html:
+        `From ${mono(ev.from + " (" + dFrom + ")")} the road to ${mono(ev.to)} has length ${mono(ev.w)}: ` +
+        `${mono(dFrom + " + " + ev.w + " = " + ev.new + " ≥ " + fmt(ev.old))}. Going through ${mono(ev.from)} is not shorter, ` +
+        `so ${mono(ev.to)} keeps its label ${mono(fmt(ev.old))}.${skip}` };
+    }
+    case "noop":
+      return { kicker: `Nothing to relax at ${ev.from}`, html:
+        `Every neighbour of ${mono(ev.from)} (${mono(ev.skipped.join(", "))}) is already finalized, so there is nothing to update.` };
+    case "done": {
+      const others = ev.snap.order.filter(n => n !== s && n !== t);
+      const free = others.length
+        ? ` Note what came for free: the shortest distance from ${s} to ${joinAnd(others.map(n => mono(n + " (" + ev.snap.dist[n] + ")")))} is known as well.` : "";
+      return { kicker: `Destination finalized · length ${ev.length}`, html:
+        `${mono(t)} is finalized at ${mono(ev.length)}, so we stop. Reading the predecessors back from ${mono(t)} gives the route ` +
+        `${mono(ev.path.join(" → "))}, total length <b>${ev.length}</b>.${free}` };
+    }
+    case "unreachable":
+      return { kicker: "Unreachable", html:
+        `No unfinalized node has a finite label, and ${mono(t)} is still ${mono("∞")}: with the current roads there is no route from ${mono(s)} to ${mono(t)}.` };
+  }
+}
+
+function buildSteps() {
+  const steps = [];
+  const rows = [];
+  let k = 0;
+
+  TRACE.events.forEach(ev => {
+    let kicker, html, hl = null;
+    if (ev.type === "init") {
+      rows.push({ step: "init", node: "–", cells: Object.assign({}, ev.snap.dist) });
+      kicker = "Start";
+      html = `We want the shortest route from ${mono(NET.source)} to ${mono(NET.target)}. Dijkstra's algorithm keeps a <b>tentative distance</b> ` +
+        `for every node: ${mono("0")} at the source, ${mono("∞")} everywhere else. Then it repeats two rules until the destination is finalized: ` +
+        `<b>(1)</b> among the unfinalized nodes, finalize the one with the smallest label -- it cannot improve any more; ` +
+        `<b>(2)</b> relax its neighbours -- if going through the finalized node is shorter, lower their label.`;
+    } else {
+      const n = narrate(ev, k);
+      kicker = n.kicker; html = n.html;
+      if (ev.type === "pick") {
+        k += 1;
+        rows.push({ step: String(k), node: `${ev.node} (${ev.d})`, cells: Object.assign({}, ev.snap.dist) });
+        hl = { kind: "pick", node: ev.node };
+      } else if (ev.type === "relax") {
+        rows[rows.length - 1].cells = Object.assign({}, ev.snap.dist);
+        hl = { kind: ev.improved ? "enter" : "leave", node: ev.to, from: ev.from };
+      } else if (ev.type === "done") {
+        hl = { kind: "done" };
+      }
+    }
+    steps.push({ kicker, html, rows: clone(rows), snap: ev.snap, ev, hl });
+  });
+  return steps;
+}
+
+/* ---------------------------------------------------------------------------
+   4.  Renderers
+--------------------------------------------------------------------------- */
+const R = 22;   // node radius
+
+function renderNet(step) {
+  const { dist, pred, finalized, order } = step.snap;
+  const ev = step.ev, hl = step.hl;
+  const isDone = ev.type === "done";
+  const pathEdges = new Set();
+  if (isDone) for (let i = 1; i < ev.path.length; i++) pathEdges.add(edgeKey(ev.path[i - 1], ev.path[i]));
+
+  let s = `<defs><filter id="nodeglow" x="-60%" y="-60%" width="220%" height="220%">
+    <feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+  </filter></defs>`;
+
+  // edges first
+  NET.edges.forEach(e => {
+    const a = POS[e.u], b = POS[e.v];
+    let stroke = "var(--border-2)", width = 1.8, dash = "", op = 1;
+    const inTree = pred[e.v] === e.u || pred[e.u] === e.v;
+    if (e.closed) { stroke = "var(--faint)"; dash = `stroke-dasharray="6 5"`; op = 0.55; }
+    else if (isDone && pathEdges.has(edgeKey(e.u, e.v))) { stroke = "var(--good)"; width = 4.5; }
+    else if (ev.type === "relax" && edgeKey(ev.from, ev.to) === edgeKey(e.u, e.v)) { stroke = "var(--enter)"; width = 4; }
+    else if (inTree) { stroke = "var(--accent)"; width = 3; }
+    s += `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="${stroke}" stroke-width="${width}" ${dash} opacity="${op}" stroke-linecap="round"/>`;
+    // length label, offset perpendicular to the edge
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    const dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || 1;
+    const ox = -dy / L * 13, oy = dx / L * 13;
+    const lbl = e.closed ? "closed" : String(e.w);
+    const lw = lbl.length * 7.5 + 10;
+    s += `<rect x="${mx + ox - lw / 2}" y="${my + oy - 9}" width="${lw}" height="18" rx="5" fill="var(--panel)" stroke="var(--border)"/>`;
+    s += `<text x="${mx + ox}" y="${my + oy + 4}" fill="${e.closed ? "var(--faint)" : "var(--muted)"}" font-size="11.5" text-anchor="middle" font-family="var(--font-mono)">${lbl}</text>`;
+  });
+
+  // nodes
+  NET.nodes.forEach(n => {
+    const id = n.id, p = POS[id];
+    const fin = finalized[id], d = dist[id];
+    const isPick = hl && hl.kind === "pick" && hl.node === id;
+    const isRelaxTo = hl && (hl.kind === "enter" || hl.kind === "leave") && hl.node === id;
+    let fill = "var(--panel)", stroke = "var(--faint)", txt = "var(--muted)";
+    if (fin) { fill = "var(--accent)"; stroke = "var(--accent)"; txt = "var(--bg)"; }
+    else if (d !== INF) { stroke = "var(--accent)"; txt = "var(--text)"; }
+    if (isDone && ev.path.includes(id)) { fill = "var(--good)"; stroke = "var(--good)"; txt = "var(--bg)"; }
+    if (isPick) s += `<circle cx="${p.x}" cy="${p.y}" r="${R + 6}" fill="none" stroke="var(--accent)" stroke-width="1.5" opacity="0.6" filter="url(#nodeglow)"/>`;
+    if (isRelaxTo) s += `<circle cx="${p.x}" cy="${p.y}" r="${R + 6}" fill="none" stroke="var(--${hl.kind})" stroke-width="2" opacity="0.8"/>`;
+    s += `<circle cx="${p.x}" cy="${p.y}" r="${R}" fill="${fill}" stroke="${stroke}" stroke-width="2"/>`;
+    s += `<text x="${p.x}" y="${p.y + 6}" fill="${txt}" font-size="17" font-weight="700" text-anchor="middle" font-family="var(--font-ui)">${id}</text>`;
+    // tentative-distance pill, top-right of the node
+    const lab = fmt(d), lw = lab.length * 8 + 12;
+    const lx = p.x + R - 4, ly = p.y - R - 4;
+    const lcol = fin ? "var(--accent)" : (d === INF ? "var(--faint)" : "var(--text)");
+    s += `<rect x="${lx}" y="${ly - 10}" width="${lw}" height="20" rx="6" fill="var(--panel-2)" stroke="${fin ? "var(--accent)" : "var(--border-2)"}"/>`;
+    s += `<text x="${lx + lw / 2}" y="${ly + 4}" fill="${lcol}" font-size="12.5" font-weight="650" text-anchor="middle" font-family="var(--font-mono)">${lab}</text>`;
+    // source / target tags
+    if (id === NET.source || id === NET.target)
+      s += `<text x="${p.x}" y="${p.y + R + 16}" fill="var(--muted)" font-size="11" text-anchor="middle" font-family="var(--font-ui)">${id === NET.source ? "source" : "destination"}</text>`;
+  });
+
+  document.getElementById("net").innerHTML = s;
+}
+
+function renderTable(step) {
+  const rows = step.rows, hl = step.hl, order = step.snap.order;
+  let h = `<thead><tr><th class="basic-label">Step</th><th>Finalized</th>`;
+  COLS.forEach(c => h += `<th class="rhs-col">${c}</th>`);
+  h += `</tr></thead><tbody>`;
+  rows.forEach((r, i) => {
+    // node finalized at the NEXT step (order[i]: row 0 is init, row i is the i-th pick)
+    const nextNode = order[i] !== undefined ? order[i] : null;
+    const isLast = i === rows.length - 1;
+    h += `<tr class="${isLast ? "dj-row-cur" : ""}"><td class="basic-label">${r.step}</td><td style="text-align:left;color:var(--muted)">${r.node}</td>`;
+    COLS.forEach(c => {
+      let cls = "rhs-col", txt = fmt(r.cells[c]);
+      if (nextNode === c) cls += " dj-bold";
+      if (isLast && hl && hl.node === c && (hl.kind === "enter" || hl.kind === "leave")) cls += hl.kind === "enter" ? " col-enter" : " col-leave";
+      h += `<td class="${cls}">${txt}</td>`;
+    });
+    h += `</tr>`;
+  });
+  h += `</tbody>`;
+  document.getElementById("labels").innerHTML = h;
+}
+
+function renderStats(step) {
+  const ev = step.ev, dist = step.snap.dist, order = step.snap.order;
+  let curNode = "–", checking = "–", comp = "–";
+  if (ev.type === "pick") { curNode = `${ev.node} (${ev.d})`; }
+  if (ev.type === "relax") {
+    curNode = `${ev.from} (${dist[ev.from]})`;
+    checking = `${ev.from} → ${ev.to}, length ${ev.w}`;
+    comp = `${dist[ev.from]} + ${ev.w} = ${ev.new} ${ev.improved ? "<" : "≥"} ${fmt(ev.old)}`;
+  }
+  if (ev.type === "noop") curNode = `${ev.from} (${dist[ev.from]})`;
+  if (ev.type === "done") curNode = `${NET.target} (${ev.length})`;
+  const compCol = ev.type === "relax" ? (ev.improved ? "var(--enter)" : "var(--leave)") : "var(--text)";
+  document.getElementById("stats").innerHTML =
+    `<div class="stat"><div class="stat-label">Current node</div><div class="stat-value">${curNode}</div></div>` +
+    `<div class="stat"><div class="stat-label">Checking road</div><div class="stat-value">${checking}</div></div>` +
+    `<div class="stat"><div class="stat-label">Comparison</div><div class="stat-value" style="color:${compCol}">${comp}</div></div>` +
+    `<div class="stat dj-wrap"><div class="stat-label">Finalized</div><div class="stat-value">${order.length ? order.join(", ") : "–"}</div></div>`;
+}
+
+function renderRoute(step) {
+  const box = document.getElementById("route-box");
+  const ev = step.ev;
+  let h = `<p class="panel-title" style="margin-top:18px">Shortest route</p>`;
+  if (ev.type === "done") {
+    h += `<p style="margin:0;font-size:14px">${mono(ev.path.join(" → "))} at length <span class="mono" style="color:var(--good)">${ev.length}</span>. ` +
+         `Read it backwards from ${NET.target}: each node's predecessor is the node that last lowered its label.</p>`;
+  } else if (ev.type === "unreachable") {
+    h += `<p style="margin:0;font-size:14px;color:var(--leave)">${NET.target} cannot be reached from ${NET.source} with the open roads.</p>`;
+  } else {
+    h += `<p style="color:var(--muted);font-size:13.5px;margin:0">Not known yet -- ${NET.target} is not finalized.</p>`;
+  }
+  box.innerHTML = h;
+}
+
+/* ---------------------------------------------------------------------------
+   5.  Network editor
+--------------------------------------------------------------------------- */
+function renderEditor() {
+  const ids = NET.nodes.map(n => n.id).sort();
+  const sel = (id, val) => `<select id="${id}">` + ids.map(n => `<option value="${n}" ${n === val ? "selected" : ""}>${n}</option>`).join("") + `</select>`;
+  let h = `<div class="dj-ed-row dj-ed-head"><span>Road</span><span>Length</span><span>Closed</span></div>`;
+  NET.edges.forEach((e, i) => {
+    h += `<div class="dj-ed-row"><span class="mono">${e.u}–${e.v}</span>` +
+         `<input type="number" min="0" step="1" value="${e.w}" data-i="${i}" class="dj-len" ${e.closed ? "disabled" : ""}>` +
+         `<input type="checkbox" data-i="${i}" class="dj-closed" ${e.closed ? "checked" : ""}></div>`;
+  });
+  h += `<div class="dj-ed-row dj-ed-ends"><span>From</span>${sel("ed-source", NET.source)}<span>to</span>${sel("ed-target", NET.target)}</div>`;
+  h += `<div class="dj-ed-actions"><button class="btn btn-primary" id="ed-apply">Apply</button>` +
+       `<button class="btn" id="ed-reset">Reset to script values</button>` +
+       `<span class="dj-ed-note">Lengths must be non-negative -- that is what makes rule (1) safe (script §4.5.1).</span></div>`;
+  const box = document.getElementById("editor");
+  box.innerHTML = h;
+
+  box.querySelectorAll(".dj-closed").forEach(cb => cb.onchange = () => {
+    box.querySelector(`.dj-len[data-i="${cb.dataset.i}"]`).disabled = cb.checked;
+  });
+  document.getElementById("ed-apply").onclick = applyEditor;
+  document.getElementById("ed-reset").onclick = () => { loadNetwork(clone(DEFAULT)); setEditorCollapsed(true); };
+  box.querySelectorAll("input").forEach(inp => inp.addEventListener("keydown", e => { if (e.key === "Enter") applyEditor(); }));
+}
+
+function applyEditor() {
+  const box = document.getElementById("editor");
+  const net = clone(NET);
+  box.querySelectorAll(".dj-len").forEach(inp => {
+    let v = Number(inp.value);
+    if (!Number.isFinite(v) || v < 0) v = 0;
+    net.edges[+inp.dataset.i].w = v;
+  });
+  box.querySelectorAll(".dj-closed").forEach(cb => net.edges[+cb.dataset.i].closed = cb.checked);
+  net.source = document.getElementById("ed-source").value;
+  net.target = document.getElementById("ed-target").value;
+  if (net.source === net.target) { alert("Source and destination must differ."); return; }
+  loadNetwork(net);
+}
+
+function setEditorCollapsed(collapsed) {
+  const pPanel = document.getElementById("editor-panel");
+  const pToggle = document.getElementById("editor-toggle");
+  pPanel.classList.toggle("collapsed", collapsed);
+  pToggle.setAttribute("aria-expanded", String(!collapsed));
+  pToggle.querySelector(".chevron").textContent = collapsed ? "▸" : "▾";
+}
+
+/* ---------------------------------------------------------------------------
+   6.  Step controller
+--------------------------------------------------------------------------- */
+function renderDots() {
+  let h = "";
+  for (let i = 0; i < STEPS.length; i++) {
+    const cls = i === cur ? "active" : (i < cur ? "done" : "");
+    h += `<span class="dot ${cls}"></span>`;
+  }
+  document.getElementById("dots").innerHTML = h;
+}
+
+function show(i) {
+  cur = Math.max(0, Math.min(STEPS.length - 1, i));
+  const step = STEPS[cur];
+  document.getElementById("narr-kicker").textContent = step.kicker;
+  document.getElementById("narr-text").innerHTML = step.html;
+  renderNet(step);
+  renderTable(step);
+  renderStats(step);
+  renderRoute(step);
+  document.getElementById("step-now").textContent = cur + 1;
+  document.getElementById("btn-prev").disabled = cur === 0;
+  document.getElementById("btn-next").disabled = cur === STEPS.length - 1;
+  renderDots();
+}
+
+function loadNetwork(net) {
+  NET = net;
+  TRACE = Dijkstra.solve({ nodes: COLS, edges: NET.edges, source: NET.source, target: NET.target });
+  STEPS = buildSteps();
+  cur = 0;
+  document.getElementById("step-total").textContent = STEPS.length;
+  const badge = document.getElementById("badge");
+  const def = isDefault();
+  badge.textContent = def ? "script instance" : "edited";
+  badge.classList.toggle("edited", !def);
+  renderEditor();
+  show(0);
+}
+
+function init() {
+  document.getElementById("btn-next").onclick  = () => show(cur + 1);
+  document.getElementById("btn-prev").onclick  = () => show(cur - 1);
+  document.getElementById("btn-reset").onclick = () => show(0);
+  document.getElementById("editor-toggle").onclick = () =>
+    setEditorCollapsed(!document.getElementById("editor-panel").classList.contains("collapsed"));
+
+  document.addEventListener("keydown", e => {
+    if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+    if (e.key === "ArrowRight") show(cur + 1);
+    if (e.key === "ArrowLeft")  show(cur - 1);
+    if (e.key === "Home")       show(0);
+  });
+
+  loadNetwork(clone(DEFAULT));
+  // optional deep link: dijkstra-road-network.html#7 opens at step 7
+  const m = /^#(\d+)$/.exec(location.hash);
+  if (m) show(+m[1] - 1);
+}
+init();
+</script>
+</body>
+</html>
