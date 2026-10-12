@@ -11,7 +11,7 @@
    active constraints (n = #vars). We enumerate every n-subset of the
    constraint rows (structural rows + the variable bound rows), solve the n×n
    system, keep feasible intersections, and take the best objective. Bulletproof
-   for small problems -- no pivoting, degeneracy, or cycling to get wrong.
+   for small problems - no pivoting, degeneracy, or cycling to get wrong.
 
    Pure, dependency-free.  Feed it a binary-IP config; get back a replay trace.
    ========================================================================== */

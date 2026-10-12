@@ -13,7 +13,7 @@
   <header class="dash-header">
     <p class="dash-eyebrow">Optimization for SCM · Discrete Programming</p>
     <h1 class="dash-title">Branch &amp; Bound, Step by Step</h1>
-    <p class="dash-subtitle">A pharma company picks which R&amp;D programs to fund -- watch the search tree grow as LP relaxations branch, bound, and prune.</p>
+    <p class="dash-subtitle">A pharma company picks which R&amp;D programs to fund - watch the search tree grow as LP relaxations branch, bound, and prune.</p>
   </header>
 
   <!-- variant switch -->
@@ -68,16 +68,16 @@
     </div>
   </div>
 
-  <p class="dash-footer">Use ← / → arrow keys to step · capital budgeting IP from “Optimization for Supply Chain Management”, Ch. 3</p>
+  <p class="dash-footer">Use ← / → arrow keys to step · capital budgeting IP from the course script “Optimization for Supply Chain Management”</p>
 </div>
 
 <script>
 "use strict";
 
 /* ---------------------------------------------------------------------------
-   1.  The two binary programs (matches the textbook, Ch. 3)
+   1.  The two binary programs (as in the script)
        All constraints are <=  (the prerequisite x6<=x4 is written x6 - x4 <= 0).
-       Coefficients match the script and Deck 2 (P1..P4: invest 4/9/5/7, value
+       Coefficients match the script (P1..P4: invest 4/9/5/7, value
        9/12/15/11, budget 11; optimum P1 + P3 = 24). To run another instance,
        only this PROBLEMS block needs to change; everything else regenerates.
 --------------------------------------------------------------------------- */
@@ -119,7 +119,7 @@ function money(v) { return OBJ_UNIT + fmt(v) + OBJ_SUFFIX; }
 const isInt = v => Math.abs(v - Math.round(v)) < 1e-6;
 
 /* ---------------------------------------------------------------------------
-   2.  Live state -- the active problem, its trace, and the step list
+   2.  Live state - the active problem, its trace, and the step list
 --------------------------------------------------------------------------- */
 let PROB, TRACE, STEPS, cur = 0;
 
@@ -155,7 +155,7 @@ function narrate(ev) {
           html: `Drop the 0/1 restriction (allow each <span class="mono">x ∈ [0,1]</span>) and solve the relaxation with simplex. ` +
             `Bound <span class="mono">z = ${money(node.obj)}</span> at <span class="mono">${vecStr(node.sol)}</span>. ` +
             (frac.length
-              ? `<span class="mono">${frac.join(", ")}</span> ${frac.length > 1 ? "are" : "is"} fractional -- this bound is the best <em>any</em> integer solution can reach.`
+              ? `<span class="mono">${frac.join(", ")}</span> ${frac.length > 1 ? "are" : "is"} fractional - this bound is the best <em>any</em> integer solution can reach.`
               : `Already all-binary!`) };
       }
       return { kicker: "Solve LP relaxation",
@@ -170,20 +170,20 @@ function narrate(ev) {
     }
     case "incumbent":
       return { kicker: "New incumbent", html:
-        `All variables are 0 or 1 -- a feasible integer solution! Its value <span class="mono">${money(node.obj)}</span> ` +
+        `All variables are 0 or 1 - a feasible integer solution! Its value <span class="mono">${money(node.obj)}</span> ` +
         `${inc && inc.nodeId !== node.id ? "beats" : "is"} the best so far, so it becomes our <b>incumbent</b>: fund ` +
         `<span class="mono">${fundedList(node.sol).join(", ") || "nothing"}</span>.` };
     case "integer":
-      return { kicker: "Feasible -- no improvement", html:
+      return { kicker: "Feasible - no improvement", html:
         `All-binary and feasible, but <span class="mono">${money(node.obj)} ≤ ${money(inc.obj)}</span> (current incumbent), ` +
         `so it does not improve our best known solution.` };
     case "prune":
       return { kicker: "Prune by bound", html:
         `This node's bound <span class="mono">${money(node.obj)} ≤ ${money(inc.obj)}</span> (incumbent). It cannot contain a ` +
-        `strictly better integer solution, so we <b>prune</b> it -- no need to branch further. <em>This is what saves B&amp;B from full enumeration.</em>` };
+        `strictly better integer solution, so we <b>prune</b> it - no need to branch further. <em>This is what saves B&amp;B from full enumeration.</em>` };
     case "infeasible":
       return { kicker: "Infeasible", html:
-        `Forcing <span class="mono">${fixStr(node.fix)}</span> violates the constraints -- the subproblem is <b>infeasible</b> and is pruned.` };
+        `Forcing <span class="mono">${fixStr(node.fix)}</span> violates the constraints - the subproblem is <b>infeasible</b> and is pruned.` };
   }
 }
 
@@ -207,7 +207,7 @@ function buildSteps() {
   steps.push({
     kicker: "Optimal",
     html: `No unexplored node can beat the incumbent, so we stop. The optimum is <span class="mono">${money(opt.obj)}</span>: ` +
-      `fund <span class="mono">${fundedList(opt.x).join(", ")}</span>. Notice this need not be the highest-value programs individually -- ` +
+      `fund <span class="mono">${fundedList(opt.x).join(", ")}</span>. Notice this need not be the highest-value programs individually - ` +
       `it is the best combination that fits the budget.`,
     snap: finalSnap, focus: opt.nodeId, kind: "optimal",
   });
@@ -274,7 +274,7 @@ function renderTree(step) {
     if (nd.parent === null) return;
     const x1 = cx(nd.parent), y1 = cy(nd.parent) + TREE.BOXH / 2;
     const x2 = cx(nd.id), y2 = cy(nd.id) - TREE.BOXH / 2;
-    const dim = nd.status === "pending" ? 0.4 : 0.85;
+    const dim = nd.status === "pending" && nd.obj === null ? 0.4 : 0.85;
     s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="var(--border-2)" stroke-width="1.6" opacity="${dim}"/>`;
     // branch label
     const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
@@ -286,7 +286,9 @@ function renderTree(step) {
   // nodes
   snap.nodes.forEach(nd => {
     const x = cx(nd.id), y = cy(nd.id);
-    const col = STATUS_COLOR[nd.status] || "var(--faint)";
+    // LP solved but not yet branched / pruned / accepted: show its bound already
+    const unsolved = nd.status === "pending" && nd.obj === null;
+    const col = nd.status === "pending" && !unsolved ? "var(--accent)" : (STATUS_COLOR[nd.status] || "var(--faint)");
     const isFocus = nd.id === step.focus;
     const dashed = (nd.status === "pruned" || nd.status === "infeasible") ? `stroke-dasharray="5 3"` : "";
     const fill = nd.status === "incumbent" ? "rgba(95,217,138,0.12)"
@@ -300,7 +302,7 @@ function renderTree(step) {
     const top = nd.parent === null ? "root" : `${vname(nd.branch.var)} = ${nd.branch.val}`;
     s += `<text x="${x}" y="${ry + 17}" fill="var(--muted)" font-size="11.5" text-anchor="middle" font-family="var(--font-mono)">${top}</text>`;
     let mid;
-    if (nd.status === "pending") mid = `<text x="${x}" y="${ry + 36}" fill="var(--faint)" font-size="12" text-anchor="middle" font-family="var(--font-mono)">solving…</text>`;
+    if (unsolved) mid = `<text x="${x}" y="${ry + 36}" fill="var(--faint)" font-size="12" text-anchor="middle" font-family="var(--font-mono)">unexplored</text>`;
     else if (nd.status === "infeasible") mid = `<text x="${x}" y="${ry + 36}" fill="${col}" font-size="12.5" text-anchor="middle" font-family="var(--font-mono)">infeasible</text>`;
     else {
       mid = `<text x="${x}" y="${ry + 37}" fill="${nd.status === 'incumbent' ? 'var(--good)' : 'var(--text)'}" font-size="14" font-weight="650" text-anchor="middle" font-family="var(--font-mono)">z = ${fmt(nd.obj)}</text>`;
@@ -378,7 +380,7 @@ function renderIncumbent(step) {
   const inc = step.snap.incumbent;
   let h = `<p class="panel-title" style="margin-top:18px">Incumbent (best integer so far)</p>`;
   if (!inc) {
-    h += `<p style="color:var(--muted);font-size:13.5px;margin:0">None found yet -- no feasible integer solution discovered.</p>`;
+    h += `<p style="color:var(--muted);font-size:13.5px;margin:0">None found yet - no feasible integer solution discovered.</p>`;
   } else {
     const funded = fundedList(inc.x);
     h += `<p style="margin:0;font-size:14px">Fund <span class="mono" style="color:var(--good)">${funded.join(", ") || "nothing"}</span> ` +

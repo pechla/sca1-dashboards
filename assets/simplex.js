@@ -24,7 +24,7 @@
     return pt;
   }
 
-  /* Pivot the tableau on (pr, pc) -- full Gauss-Jordan elimination. */
+  /* Pivot the tableau on (pr, pc) - full Gauss-Jordan elimination. */
   function pivot(T, pr, pc) {
     const piv = T[pr][pc];
     for (let j = 0; j < T[pr].length; j++) T[pr][j] /= piv;

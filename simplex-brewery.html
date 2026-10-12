@@ -13,7 +13,7 @@
   <header class="dash-header">
     <p class="dash-eyebrow">Optimization for SCM · Linear Programming</p>
     <h1 class="dash-title">The Simplex Method, Step by Step</h1>
-    <p class="dash-subtitle">A craft brewery maximizes weekly contribution margin -- watch the tableau pivot and the corner point walk the feasible region.</p>
+    <p class="dash-subtitle">A craft brewery maximizes weekly contribution margin - watch the tableau pivot and the corner point walk the feasible region.</p>
   </header>
 
   <!-- problem statement (collapsible) -->
@@ -23,7 +23,7 @@
     </button>
     <div class="problem" id="problem"></div>
     <div class="algo" id="algo">
-      <p class="algo-title">One simplex iteration (Ch. 2)</p>
+      <p class="algo-title">One simplex iteration</p>
       <ol>
         <li><b>Entering variable.</b> Pick the most negative coefficient in the z-row; that variable enters the basis. If no coefficient is negative, the current solution is optimal and we stop.</li>
         <li><b>Leaving variable.</b> Minimum ratio test: divide each RHS by the positive entry in the entering column. The row with the smallest ratio is the pivot row, its basic variable leaves, and the entry where pivot row and entering column meet is the pivot element.</li>
@@ -68,14 +68,14 @@
     </div>
   </div>
 
-  <p class="dash-footer">Use ← / → arrow keys to step · brewery LP from “Optimization for Supply Chain Management”, Ch. 2</p>
+  <p class="dash-footer">Use ← / → arrow keys to step · brewery LP from the course script “Optimization for Supply Chain Management”</p>
 </div>
 
 <script>
 "use strict";
 
 /* ---------------------------------------------------------------------------
-   1.  The brewery LP  (matches the textbook, Ch. 2)
+   1.  The brewery LP  (as in the script)
        max 30 x1 + 20 x2   s.t.  hops, tank time, malt, two demand caps
 --------------------------------------------------------------------------- */
 const CONFIG = {
@@ -124,10 +124,10 @@ function buildSteps() {
   const steps = [];
   const visited = [TRACE.initial.vertex.slice()];   // accumulating path
 
-  // step 0 -- start
+  // step 0 - start
   steps.push({
     kicker: "Start",
-    html: `Begin at the origin <span class="mono">x₁ = x₂ = 0</span> -- brew nothing. ` +
+    html: `Begin at the origin <span class="mono">x₁ = x₂ = 0</span> - brew nothing. ` +
           `The ${TRACE.m} slacks are basic and equal the right-hand sides, and the objective is ` +
           `<span class="mono">z = 0</span>. Each negative z-row coefficient shows how much z would rise per unit of that variable.`,
     tableau: TRACE.initial.tableau,
@@ -147,7 +147,7 @@ function buildSteps() {
       kicker: `Iteration ${n} · entering variable`,
       html: `The most negative z-row coefficient is <span class="mono">${fmt(enterCoeff)}</span> ` +
             `on <span class="mono">${pretty(it.enterVar)}</span>, so <span class="mono">${pretty(it.enterVar)}</span> ` +
-            `<b>enters</b> the basis -- increasing it raises z the fastest. Its column is highlighted.`,
+            `<b>enters</b> the basis - increasing it raises z the fastest. Its column is highlighted.`,
       tableau: it.tableauBefore, basis: it.basisBefore, vertex: it.vertexBefore,
       path: visited.slice(), z: it.zBefore,
       hl: { enterCol: it.enterCol },
@@ -186,7 +186,7 @@ function buildSteps() {
       hl: { enterCol: it.enterCol, leaveRow: it.leaveRow, pivot: it.pivot, ratios: it.ratios, rowOps: true },
     });
 
-    // (c) pivot -- move to the new corner
+    // (c) pivot - move to the new corner
     visited.push(it.vertexAfter.slice());
     steps.push({
       kicker: `Iteration ${n} · pivot`,
@@ -199,11 +199,11 @@ function buildSteps() {
     });
   });
 
-  // final -- optimal + shadow prices
+  // final - optimal + shadow prices
   const opt = TRACE.optimal;
   steps.push({
     kicker: "Optimal",
-    html: `All z-row coefficients are now <span class="mono">≥ 0</span> -- no variable can improve z, so we stop. ` +
+    html: `All z-row coefficients are now <span class="mono">≥ 0</span> - no variable can improve z, so we stop. ` +
           `Optimal plan: brew <span class="mono">${fmt(opt.vertex[0])}</span> hl IPA and ` +
           `<span class="mono">${fmt(opt.vertex[1])}</span> hl Lager for a weekly margin of ` +
           `<span class="mono">${OBJ_UNIT}${fmt(opt.z)}</span>. The slack columns of the z-row are the shadow prices ↓`,

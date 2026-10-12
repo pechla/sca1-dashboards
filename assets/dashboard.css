@@ -1,5 +1,5 @@
 /* ============================================================================
-   Shared dashboard theme  --  "Optimization for SCM" interactive dashboards
+   Shared dashboard theme - "Optimization for SCM" interactive dashboards
    Dark, restrained, techy.  Re-theme by editing the design tokens below.
    ========================================================================== */
 
@@ -409,14 +409,14 @@ table.shadow tr.binding td { color: var(--text); }
 }
 
 /* ============================================================================
-   Branch & bound dashboard -- search tree + bounds bar
+   Branch & bound dashboard - search tree + bounds bar
    ========================================================================== */
 
 /* variant switch (segmented buttons) */
 .bb-switch { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
 .bb-switch .btn { font-size: 13px; padding: 7px 14px; }
 
-/* the tree can grow wide/tall -- let it scroll inside the panel */
+/* the tree can grow wide/tall - let it scroll inside the panel */
 .bb-tree-scroll { overflow: auto; max-height: 560px; }
 .bb-tree { display: block; height: auto; }
 
@@ -429,7 +429,7 @@ table.shadow tr.binding td { color: var(--text); }
 }
 
 /* ============================================================================
-   Dijkstra dashboard -- road network + label table + network editor
+   Dijkstra dashboard - road network + label table + network editor
    ========================================================================== */
 
 .dj-net { width: 100%; height: auto; display: block; }
