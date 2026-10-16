@@ -492,3 +492,7 @@ table.tableau.dp-cand td, table.tableau.dp-cand th { padding-top: 5px; padding-b
 .dp-ed-grid .dj-ed-row { grid-template-columns: 90px 130px 1fr; }
 .dp-ed-grid input[type="number"] { width: 130px; }
 .dp-ed-grid table.tableau { font-size: 13px; }
+/* stage jump buttons in the DP sticky bar */
+.dp-jumps { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; flex-basis: 100%; }
+.dp-jumps .jl { color: var(--faint); font-size: 12px; margin-right: 2px; }
+.dp-jumps .btn { font-size: 12px; padding: 4px 9px; }

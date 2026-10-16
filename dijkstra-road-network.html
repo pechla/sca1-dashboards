@@ -155,8 +155,9 @@ function narrate(ev, k) {
         `so ${mono(ev.to)} keeps its label ${mono(fmt(ev.old))}.${skip}` };
     }
     case "noop":
-      return { kicker: `Nothing to relax at ${ev.from}`, html:
-        `Every neighbour of ${mono(ev.from)} (${mono(ev.skipped.join(", "))}) is already finalized, so there is nothing to update.` };
+      return { kicker: `Nothing to relax at ${ev.from}`, html: ev.skipped.length
+        ? `Every neighbour of ${mono(ev.from)} (${mono(ev.skipped.join(", "))}) is already finalized, so there is nothing to update.`
+        : `No open road touches ${mono(ev.from)}, so there is nothing to update.` };
     case "done": {
       const others = ev.snap.order.filter(n => n !== s && n !== t);
       const free = others.length

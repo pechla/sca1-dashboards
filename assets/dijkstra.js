@@ -112,8 +112,8 @@
         });
         first = false;
       });
-      if (first && skipped.length) {
-        // nothing to relax at all: surface the skip so the UI can say so
+      if (first) {
+        // nothing to relax at all: surface it so the UI can say so
         events.push({ type: "noop", from: best, skipped,
                       snap: snapshot(dist, pred, finalized, order) });
       }

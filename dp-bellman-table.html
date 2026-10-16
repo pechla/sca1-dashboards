@@ -1,0 +1,905 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dynamic Programming Walkthrough - Bellman's Table</title>
+<link rel="stylesheet" href="assets/dashboard.css">
+<script src="assets/dp.js"></script>
+</head>
+<body>
+<div class="dash-wrap">
+
+  <header class="dash-header">
+    <p class="dash-eyebrow">Optimization for SCM · Dynamic Programming</p>
+    <h1 class="dash-title">Bellman's Table, Step by Step <span class="dj-badge" id="badge">script instance</span></h1>
+    <p class="dash-subtitle" id="subtitle"></p>
+  </header>
+
+  <!-- instance switch -->
+  <div class="bb-switch" id="variant-switch">
+    <button class="btn btn-primary" data-inst="route">Shortest route · the forwarder's network</button>
+    <button class="btn" data-inst="hp">Production planning · the heat pump manufacturer</button>
+  </div>
+
+  <!-- editor (collapsible) -->
+  <div class="panel collapsible collapsed" id="editor-panel" style="margin-bottom:16px">
+    <button class="panel-title toggle" id="editor-toggle" aria-expanded="false">
+      <span id="editor-title">Edit the data</span> <span class="chevron">▸</span>
+    </button>
+    <div class="dj-editor" id="editor"></div>
+  </div>
+
+  <!-- sticky bar -->
+  <div class="sticky-bar">
+    <div class="controls">
+      <button class="btn" id="btn-reset" title="Back to start">⏮ Reset</button>
+      <button class="btn" id="btn-prev">‹ Prev</button>
+      <button class="btn btn-primary" id="btn-next">Next ›</button>
+      <div class="progress-dots" id="dots"></div>
+      <span class="step-pill">Step <b id="step-now">1</b> / <span id="step-total">1</span></span>
+      <div class="dp-jumps" id="jumps"></div>
+    </div>
+    <div class="narration">
+      <p class="narr-kicker" id="narr-kicker">Start</p>
+      <p class="narr-text" id="narr-text"></p>
+    </div>
+  </div>
+
+  <!-- main grid -->
+  <div class="dash-grid">
+    <div class="panel">
+      <p class="panel-title" id="net-title">Network</p>
+      <p class="dp-strip" id="strip"></p>
+      <svg class="dj-net" id="net" viewBox="0 0 620 320" preserveAspectRatio="xMidYMid meet"></svg>
+      <div class="geo-legend">
+        <span class="lg"><span class="swatch dot-sw" style="background:var(--accent)"></span>solved</span>
+        <span class="lg"><span class="swatch dot-sw" style="background:var(--panel);border:2px solid var(--accent)"></span>being solved</span>
+        <span class="lg"><span class="swatch dot-sw" style="background:var(--panel);border:2px solid var(--faint)"></span>not yet</span>
+        <span class="lg"><span class="swatch" style="background:var(--enter);height:3px"></span>candidate</span>
+        <span class="lg"><span class="swatch" style="background:var(--accent);height:3px"></span>best choice</span>
+        <span class="lg"><span class="swatch" style="background:var(--good);height:3px"></span>optimal path</span>
+      </div>
+    </div>
+
+    <!-- right panel, shortest route -->
+    <div class="panel" id="right-route">
+      <p class="panel-title">Value table <span class="dj-tblnote">(in the order of evaluation)</span></p>
+      <div class="tableau-scroll"><table class="tableau" id="values"></table></div>
+      <p class="panel-title" style="margin-top:18px">Candidates at <span class="mono" id="cand-node">–</span></p>
+      <div class="tableau-scroll"><table class="tableau dp-cand" id="cands"></table></div>
+      <div class="readout" id="stats-route"></div>
+      <div id="result-route"></div>
+    </div>
+
+    <!-- right panel, production planning -->
+    <div class="panel" id="right-hp" style="display:none">
+      <div id="hp-tables"></div>
+      <div class="readout" id="stats-hp"></div>
+      <div id="result-hp"></div>
+    </div>
+  </div>
+
+  <p class="dash-footer">Use ← / → arrow keys to step · examples from the course script “Optimization for Supply Chain Management”</p>
+</div>
+
+<script>
+"use strict";
+
+/* ---------------------------------------------------------------------------
+   1.  The two script instances. Only these blocks carry numbers.
+--------------------------------------------------------------------------- */
+// The forwarder's layered network: plant 1 -> inland terminals 2, 3 -> seaports
+// 4, 5, 6 -> destination ports 7, 8 -> customer 9. Costs in hundreds of euros per
+// container. Arc order = order of evaluation within a node (as in the script's
+// candidate table). Optimum 1-3-6-7-9 = 17, greedy 1-2-5-8-9 = 22, no ties.
+const ROUTE_DEFAULT = {
+  layers: [["1"], ["2", "3"], ["4", "5", "6"], ["7", "8"], ["9"]],
+  columns: ["plant", "inland terminal", "seaport", "destination port", "customer"],
+  roles: ["the plant", "terminal", "seaport", "port", "the customer"],
+  arcs: [
+    { from: "1", to: "2", c: 4 }, { from: "1", to: "3", c: 7 },
+    { from: "2", to: "4", c: 7 }, { from: "2", to: "5", c: 5 },
+    { from: "3", to: "5", c: 5 }, { from: "3", to: "6", c: 2 },
+    { from: "4", to: "7", c: 8 }, { from: "4", to: "8", c: 2 },
+    { from: "5", to: "7", c: 6 }, { from: "5", to: "8", c: 4 },
+    { from: "6", to: "7", c: 2 },
+    { from: "7", to: "9", c: 6 }, { from: "8", to: "9", c: 9 },
+  ],
+  unit: 100,            // one cost unit = EUR 100
+};
+
+// The heat pump manufacturer: lots of 100 units, money in thousands of euros:
+// quarterly demand, production capacity per quarter, warehouse capacity at
+// quarter end, setup cost per run, holding cost per lot per quarter. Opening
+// stock 0, and the year must end with an empty warehouse.
+// Optimum: produce 2, 0, 3, 4 lots at 204 (three setups, two lot-quarters).
+const HP_DEFAULT = { d: [1, 1, 2, 5], cap: 4, W: 2, K: 60, h: 12 };
+
+/* ---------- helpers ---------- */
+const INF = Infinity;
+const R = 22;   // node radius
+const COL = { border: "var(--border-2)", enter: "var(--enter)", accent: "var(--accent)", good: "var(--good)", faint: "var(--faint)" };
+const mono = s => `<span class="mono">${s}</span>`;
+const clone = o => JSON.parse(JSON.stringify(o));
+function joinAnd(arr) {
+  if (arr.length <= 1) return arr.join("");
+  return arr.slice(0, -1).join(", ") + " and " + arr[arr.length - 1];
+}
+const fmtInt = v => (v === INF || v === null || v === undefined) ? "∞" : Number(v).toLocaleString("en-US");
+const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+const fmtV = v => v === INF ? "∞" : String(v);
+
+/* ---------------------------------------------------------------------------
+   2.  Instance adapters. Each turns its data into { nodes, arcs, direction }
+       for the engine, and supplies drawing positions, wording and renderers.
+--------------------------------------------------------------------------- */
+const ROUTE = {
+  key: "route",
+  data: clone(ROUTE_DEFAULT),
+  subtitle: "A container from the plant (node 1) to the customer (node 9) in four legs: g(i) is the cost of the cheapest route from node i to the customer, solved one node at a time from the customer back to the plant.",
+  netTitle: "The forwarder's network",
+  editorTitle: "Edit the arcs",
+  get source() { return this.data.layers[0][0]; },
+  get target() { const L = this.data.layers; return L[L.length - 1][0]; },
+  isDefault() {
+    return this.data.arcs.every((a, i) => Number(a.c) === ROUTE_DEFAULT.arcs[i].c && !a.closed);
+  },
+  build() {
+    const nodes = [].concat(...this.data.layers);        // already in order: every arc points to a later node
+    const arcs = this.data.arcs.filter(a => !a.closed).map(a => ({ from: a.from, to: a.to, c: Number(a.c) }));
+    this.order = nodes;
+    this.stage = {}; this.role = {};
+    this.data.layers.forEach((L, k) => L.forEach(n => {
+      this.stage[n] = k + 1 < this.data.layers.length ? k + 1 : null;      // the leg leaving the node
+      this.role[n] = this.data.roles[k];
+    }));
+    return { nodes, arcs, direction: "backward" };
+  },
+  columns() { return this.order.slice().reverse(); },   // 9, 8, ..., 1: the order of evaluation
+  stageOf(n) { return this.stage[n] === null ? "–" : String(this.stage[n]); },
+  name(n) { const r = this.role[n]; return r.startsWith("the ") ? `${r} (node ${n})` : `${r} ${n}`; },
+  positions() {
+    const P = {}, L = this.data.layers, x0 = 50, dx = 130, yc = 165, dy = 95;
+    L.forEach((col, k) => col.forEach((n, i) => P[n] = { x: x0 + dx * k, y: yc + dy * (i - (col.length - 1) / 2) }));
+    return P;
+  },
+  euros(v) { return "€" + fmtInt(v * this.data.unit); },
+  greedy() {   // cheapest open arc at every step, first on a tie (the dispatcher's rule)
+    const path = [this.source]; let cost = 0, n = this.source;
+    while (n !== this.target) {
+      const out = MODEL.arcs.filter(a => a.from === n);
+      if (!out.length) return { path, cost, complete: false };
+      const a = out.reduce((b, x) => x.c < b.c ? x : b);
+      cost += a.c; n = a.to; path.push(n);
+    }
+    return { path, cost, complete: true };
+  },
+  jumps() {
+    const J = [];
+    for (let k = this.data.layers.length - 1; k >= 1; k--)
+      J.push({ label: `Stage ${k}`, at: STEPS.findIndex(st => st.ev.type === "open" && this.stage[st.ev.node] === k) });
+    J.push({ label: "Route", at: STEPS.length - 1 });
+    return J.filter(j => j.at >= 0);
+  },
+};
+
+const HP = {
+  key: "hp",
+  data: clone(HP_DEFAULT),
+  subtitle: "A heat pump manufacturer plans four quarters of production with a setup cost, a production limit and a warehouse limit: f_t(s) is the cheapest cost from quarter t to the year end when the quarter opens with s lots in stock, solved one table per quarter from Q4 back to Q1.",
+  netTitle: "Stages and states",
+  editorTitle: "Edit the data",
+  get T() { return this.data.d.length; },
+  id: (t, s) => `${t},${s}`,
+  ts(id) { const [t, s] = id.split(",").map(Number); return { t, s }; },
+  get source() { return this.id(1, 0); },
+  get target() { return this.id(this.T + 1, 0); },
+  isDefault() {
+    const d = this.data, D = HP_DEFAULT;
+    return d.cap === D.cap && d.W === D.W && d.K === D.K && d.h === D.h &&
+      d.d.length === D.d.length && d.d.every((x, i) => x === D.d[i]);
+  },
+  // why a quantity x is ruled out at (t, s) before any value is looked at; null if allowed
+  ruledOut(t, s, x) {
+    const d = this.data, sN = s + x - d.d[t - 1];
+    if (sN < 0) return "demand unmet";
+    if (sN > d.W) return "no room in the warehouse";
+    if (t === this.T && sN > 0) return "stock left at the year end";
+    return null;
+  },
+  cost(x, sN) { return (x > 0 ? this.data.K : 0) + this.data.h * sN; },
+  build() {
+    const d = this.data, T = this.T;
+    // solving order: year end, then Q4 rows s = 0, 1, 2, then Q3, ... (top-down as in the tables)
+    const walk = [this.id(T + 1, 0)];
+    for (let t = T; t >= 1; t--) for (let s = 0; s <= d.W; s++) walk.push(this.id(t, s));
+    const nodes = walk.slice().reverse();
+    const arcs = []; this.arcMap = {};
+    for (let t = 1; t <= T; t++) for (let s = 0; s <= d.W; s++) for (let x = 0; x <= d.cap; x++) {
+      if (this.ruledOut(t, s, x)) continue;
+      const sN = s + x - d.d[t - 1];
+      const a = { from: this.id(t, s), to: this.id(t + 1, sN), c: this.cost(x, sN), x, sN };
+      arcs.push(a); this.arcMap[`${t},${s},${x}`] = a;
+    }
+    this.order = nodes;
+    return { nodes, arcs, direction: "backward", start: this.source };
+  },
+  arcAt(t, s, x) { return this.arcMap[`${t},${s},${x}`]; },
+  xOf(from, to) { const a = this.ts(from), b = this.ts(to); return b.s - a.s + this.data.d[a.t - 1]; },
+  f(id) { const { t, s } = this.ts(id); return mono(`f<sub>${t}</sub>(${s})`); },
+  where(id) { const { t, s } = this.ts(id); return t > this.T ? "the year end" : `Q${t} with ${plural(s, "lot")} in stock`; },
+  positions() {
+    const P = {}, T = this.T, W = this.data.W, x0 = 60, x1 = 575, yb = 270, yt = 72;
+    const ys = s => W === 0 ? yb : yb - (yb - yt) * s / W;
+    for (let t = 1; t <= T; t++) for (let s = 0; s <= W; s++) P[this.id(t, s)] = { x: x0 + (x1 - x0) * (t - 1) / T, y: ys(s) };
+    P[this.id(T + 1, 0)] = { x: x1, y: ys(0) };
+    return P;
+  },
+  jumps() {
+    const J = [];
+    for (let t = this.T; t >= 1; t--)
+      J.push({ label: `Q${t}`, at: STEPS.findIndex(st => st.ev.type === "open" && this.ts(st.ev.node).t === t) });
+    J.push({ label: "Plan", at: STEPS.length - 1 });
+    return J.filter(j => j.at >= 0);
+  },
+};
+
+const INSTANCES = { route: ROUTE, hp: HP };
+const DEFAULTS = { route: ROUTE_DEFAULT, hp: HP_DEFAULT };
+
+/* ---------------------------------------------------------------------------
+   3.  Live state
+--------------------------------------------------------------------------- */
+let INST, MODEL, TRACE, STEPS, POS, LBL, cur = 0;
+
+/* ---------------------------------------------------------------------------
+   4.  Narration
+--------------------------------------------------------------------------- */
+function narrateRoute(ev) {
+  const g = n => mono(`g(${n})`);
+  const s = INST.source, t = INST.target, name = n => INST.name(n);
+  switch (ev.type) {
+    case "init": {
+      const gr = INST.greedy();
+      const greedy = gr.complete
+        ? ` Choosing the cheapest arc on every leg gives ${mono(gr.path.join(" → "))} at ${mono(gr.cost)}; we will see whether the recursion can do better.`
+        : "";
+      return { kicker: "Start · the recursion", html:
+        `We want ${g("i")}, the cost of the cheapest route from node ${mono("i")} to ${name(t)}, for every node. ` +
+        `${g(t)} ${mono("= 0")}: nothing left to travel. For any other node, <b>the best route out of a node is an arc leaving it plus the cheapest route from where that arc leads</b>: ` +
+        `${mono("g(i) = min { c_ij + g(j) }")} over the arcs ${mono("i → j")}. Every arc leads to a higher-numbered node, so we solve the nodes in the order ` +
+        `${mono(INST.order.slice(0, -1).reverse().join(", "))}, stage ${INST.data.layers.length - 1} back to stage 1, and every successor is known when we need it.${greedy}` };
+    }
+    case "open": {
+      const st = INST.stageOf(ev.node);
+      if (!ev.arcs.length) return { kicker: `Stage ${st} · node ${ev.node} · no arc out`, html:
+        `No open arc leaves ${name(ev.node)}, so ${g(ev.node)} ${mono("= ∞")}: the customer cannot be reached from there.` };
+      const list = ev.arcs.map(a => `${name(a.to)} (cost ${a.c})`);
+      const one = ev.arcs.length === 1;
+      return { kicker: `Stage ${st} · node ${ev.node} · ${plural(ev.arcs.length, "arc")} out`, html:
+        `${name(ev.node).replace(/^the /, "The ")} has ${one ? "a single arc" : plural(ev.arcs.length, "arc")} out: to ${joinAnd(list)}. ` +
+        (one ? `There is no choice, so ${g(ev.node)} is simply the arc's cost plus ${g(ev.arcs[0].to)}.`
+             : `Every node they lead to is already solved, so ${g(ev.node)} is the smallest of (arc cost + ${mono("g")} of the next node).`) };
+    }
+    case "candidate": {
+      const arith = mono(`${ev.c} + ${fmtV(ev.otherValue)} = ${fmtV(ev.total)}`);
+      let verdict;
+      if (ev.total === INF) verdict = `${name(ev.other)} cannot reach the customer, so this arc is useless.`;
+      else if (ev.isBest && ev.index === 0 && ev.count === 1) verdict = `The only candidate.`;
+      else if (ev.isBest && ev.index === 0) verdict = `First candidate, so it is the best so far.`;
+      else if (ev.isBest) verdict = `Cheaper than the previous best, so ${name(ev.other)} becomes the best choice so far.`;
+      else if (ev.tie) verdict = `Exactly ties with the best so far via ${mono(ev.bestVia)}; we keep the first, either choice is optimal.`;
+      else verdict = `Loses by ${mono(ev.total - ev.bestSoFar)} to the ${mono(ev.bestSoFar)} via ${mono(ev.bestVia)}.`;
+      return { kicker: `Candidate ${ev.node} → ${ev.other}`, html:
+        `Take the arc ${mono(ev.node + " → " + ev.other)} (cost ${mono(ev.c)}) and then the cheapest route from ${name(ev.other)}, ` +
+        `which costs ${g(ev.other)} ${mono("= " + fmtV(ev.otherValue))}: ${arith}. ${verdict}` };
+    }
+    case "close": {
+      let extra = "";
+      if (INST.isDefault()) {
+        if (ev.node === "4") extra = ` This is the script's hand computation: ${mono("8 + 6 = 14")} via port 7 against ${mono("2 + 9 = 11")} via port 8.`;
+        if (ev.node === "5") extra = ` Note that the <b>cheaper arc loses</b>: the arc to port 8 costs only 4, but ${mono("4 + 9 = 13")} is beaten by ${mono("6 + 6 = 12")} via port 7, because of what follows.`;
+        if (ev.node === "1") extra = ` The cheapest arc out of the plant, to terminal 2 at 4, gives ${mono("4 + 17 = 21")}; the dearest, to terminal 3 at 7, gives ${mono("7 + 10 = 17")} and wins.`;
+      }
+      return { kicker: `Solved · g(${ev.node}) = ${ev.value} via ${ev.via}`, html:
+        `${g(ev.node)} ${mono("= " + ev.value)}, going via ${name(ev.via)}.${extra} Node ${mono(ev.node)} is now solved once and for all: ` +
+        `every node that leads into it will reuse this number instead of looking past ${mono(ev.node)} again.` };
+    }
+    case "unreachable":
+      if (ev.path === null && ev.node === s) return { kicker: "Unreachable", html:
+        `${g(s)} ${mono("= ∞")}: with the open arcs there is no route from ${name(s)} to ${name(t)}.` };
+      return { kicker: `Solved · g(${ev.node}) = ∞`, html:
+        `Every candidate at ${mono(ev.node)} is ${mono("∞")}, so ${name(ev.node)} cannot reach the customer.` };
+    case "done": {
+      const via = ev.snap.via;
+      const chain = ev.path.slice(0, -1).map(n => `${n} → ${via[n]}`).join(", ");
+      const gr = INST.greedy();
+      const greedy = gr.complete && gr.path.join() !== ev.path.join()
+        ? ` The cheapest-arc-on-every-leg route ${mono(gr.path.join(" → "))} costs ${mono(gr.cost)}.`
+        : (gr.complete ? ` Here the cheapest arc on every leg happens to give the same route.` : "");
+      // the most reused node: the one with the most open arcs into it
+      const inDeg = {}; MODEL.arcs.forEach(a => inDeg[a.to] = (inDeg[a.to] || 0) + 1);
+      const hub = Object.keys(inDeg).reduce((b, n) => inDeg[n] > inDeg[b] ? n : b);
+      const reuse = inDeg[hub] > 1
+        ? ` Each of the ${MODEL.arcs.length} arcs was evaluated exactly once: ${g(hub)} ${mono("= " + fmtV(ev.snap.value[hub]))} was computed once and reused by all ${inDeg[hub]} arcs that lead into node ${mono(hub)}. That reuse is the whole efficiency of the method.`
+        : ` Each of the ${MODEL.arcs.length} arcs was evaluated exactly once.`;
+      // the table also holds the best continuation from every node
+      const off = INST.order.find(n => !ev.path.includes(n) && ev.snap.value[n] !== INF && via[n]);
+      const bonus = off ? ` And the table answers more than was asked: from ${name(off)} the cheapest continuation runs via ${mono(via[off])} at ${mono(ev.snap.value[off])}, read off at no extra cost.` : "";
+      return { kicker: `Done · g(${s}) = ${ev.total}`, html:
+        `Read the <b>via</b> entries forwards from ${name(s)}: ${mono(chain)}. The cheapest route is ${mono(ev.path.join(" → "))} at cost <b>${ev.total}</b>, ` +
+        `that is ${INST.euros(ev.total)} per container.${greedy}${reuse}${bonus}` };
+    }
+  }
+}
+
+function narrateHp(ev) {
+  const d = INST.data, T = INST.T, f = id => INST.f(id);
+  switch (ev.type) {
+    case "init":
+      return { kicker: "Start · stages, states, decisions", html:
+        `The <b>stages</b> are the quarters. The <b>state</b> is the opening stock ${mono("s")}, from 0 to ${d.W} lots, because that is all a quarter needs to know about the past. ` +
+        `The <b>decision</b> is the number of lots produced, ${mono("x")}, from 0 to ${d.cap}; it leaves ${mono("s' = s + x − d")} in stock, which must stay between 0 and ${d.W}. ` +
+        `A quarter costs the setup ${mono(d.K)} if it produces anything, plus ${mono(d.h)} per lot carried into the next quarter. ` +
+        `${mono("f<sub>t</sub>(s)")} is the cheapest cost from quarter ${mono("t")} to the year end when the quarter opens with ${mono("s")} lots: ` +
+        `${mono(`f<sub>${T + 1}</sub>(0) = 0`)}, the year must end empty, and ${mono("f<sub>t</sub>(s) = min<sub>x</sub> { c(s, x) + f<sub>t+1</sub>(s + x − d<sub>t</sub>) }")}. ` +
+        `We fill one table per quarter, Q${T} first, one cell per step; every cell reads a value from the table above it.` };
+    case "open": {
+      const { t, s } = INST.ts(ev.node), dem = d.d[t - 1];
+      const out = []; for (let x = 0; x <= d.cap; x++) { const why = INST.ruledOut(t, s, x); if (why) out.push({ x, why }); }
+      const byWhy = {}; out.forEach(o => (byWhy[o.why] = byWhy[o.why] || []).push(o.x));
+      const ruled = Object.keys(byWhy).map(w => `${mono("x = " + byWhy[w].join(", "))} (${w})`);
+      const ruledTxt = ruled.length ? ` Ruled out before any value is looked at: ${joinAnd(ruled)}.` : "";
+      if (!ev.arcs.length) return { kicker: `Q${t} · stock ${s} · no feasible quantity`, html:
+        `Q${t} has demand ${dem} and opens with ${plural(s, "lot")}.${ruledTxt} Nothing is left, so this row is infeasible: ${f(ev.node)} does not exist, ` +
+        `and the table before it must never leave ${plural(s, "lot")} in stock at the end of Q${t - 1}.` };
+      const list = ev.arcs.map(a => `${mono("x = " + a.x)} (leaves ${a.sN})`);
+      return { kicker: `Q${t} · stock ${s} · ${plural(ev.arcs.length, "feasible quantity").replace("quantitys", "quantities")}`, html:
+        `Q${t} has demand ${dem} and opens with ${plural(s, "lot")}. Feasible: ${joinAnd(list)}.${ruledTxt} ` +
+        `Each feasible cell is the cost of this quarter plus the value of the state it leads to in the Q${t + 1} table.` };
+    }
+    case "candidate": {
+      const { t, s } = INST.ts(ev.node), x = INST.xOf(ev.node, ev.other), sN = INST.ts(ev.other).s;
+      const setup = x > 0 ? d.K : 0, hold = d.h * sN;
+      const now = x > 0 ? `setup ${mono(setup)}` : `no setup`;
+      const holdTxt = sN > 0 ? ` plus holding ${mono(`${d.h} × ${sN} = ${hold}`)}` : ` and nothing to carry`;
+      const nextTxt = t === T ? `the year end, worth ${mono("0")}` : `${f(ev.other)} ${mono("= " + fmtV(ev.otherValue))} from the Q${t + 1} table`;
+      if (ev.total === INF) return { kicker: `x = ${x} · no continuation`, html:
+        `Producing ${x} leaves ${plural(sN, "lot")}, but the Q${t + 1} table says that opening Q${t + 1} with ${plural(sN, "lot")} is infeasible, so ${mono("x = " + x)} is out.` };
+      let verdict;
+      if (ev.isBest && ev.index === 0 && ev.count === 1) verdict = `The only feasible quantity.`;
+      else if (ev.isBest && ev.index === 0) verdict = `First candidate, so it is the best so far.`;
+      else if (ev.isBest) verdict = `Cheaper than the previous best, so ${mono("x = " + x)} becomes the best so far.`;
+      else if (ev.tie) verdict = `Exactly ties with the best so far; we keep the first, either plan is optimal.`;
+      else verdict = `Loses by ${mono(ev.total - ev.bestSoFar)} to the ${mono(ev.bestSoFar)} of ${mono("x = " + INST.xOf(ev.node, ev.bestVia))}.`;
+      return { kicker: `x = ${x} · ${ev.c} + ${fmtV(ev.otherValue)} = ${fmtV(ev.total)}`, html:
+        `Produce ${plural(x, "lot")}: the quarter ends with ${mono(`${s} + ${x} − ${d.d[t - 1]} = ${sN}`)} in stock. Cost now: ${now}${holdTxt}, ${mono(ev.c)}. ` +
+        `Then the best continuation from ${INST.where(ev.other)}: ${nextTxt}. ${mono(`${ev.c} + ${fmtV(ev.otherValue)} = ${fmtV(ev.total)}`)}. ${verdict}` };
+    }
+    case "close": {
+      const { t, s } = INST.ts(ev.node), x = INST.xOf(ev.node, ev.via), sN = INST.ts(ev.via).s;
+      let extra = "";
+      if (INST.isDefault()) {
+        if (t === 3 && s === 2) extra = ` Every Q3 row ends the quarter with exactly one lot, the smallest stock Q4 can start from: the capacity limit forces Q3 to build ahead.`;
+        if (t === 2 && s === 1) extra = ` This is the first row where <b>not producing</b> wins: the lot on the shelf covers Q2 and the setup is saved.`;
+        if (t === 1 && s === 0) extra = ` Two lots cover Q1 and Q2 for one setup and one lot-quarter of holding; one lot would mean a second setup in Q2, three lots pay more holding for no further saving.`;
+      }
+      return { kicker: `Solved · f${t}(${s}) = ${ev.value}, x* = ${x}`, html:
+        `Opening Q${t} with ${plural(s, "lot")}, the best is to produce ${x}, leaving ${sN}: ${f(ev.node)} ${mono("= " + ev.value)}.${extra} ` +
+        `The row is done${t > 1 ? `; the Q${t - 1} table will read this number whenever a decision leaves ${plural(s, "lot")} in stock` : ""}.` };
+    }
+    case "unreachable": {
+      if (ev.path === null) return { kicker: "No feasible plan", html:
+        `${f(INST.source)} ${mono("= ∞")}: with these data no production plan serves every quarter from an empty warehouse.` };
+      const { t, s } = INST.ts(ev.node);
+      return { kicker: `Infeasible · f${t}(${s}) does not exist`, html:
+        `No quantity works when Q${t} opens with ${plural(s, "lot")}: the row stays empty, and any decision in Q${t - 1} that ends with ${plural(s, "lot")} is out.` };
+    }
+    case "done": {
+      const plan = hpPlan(ev.path);
+      const steps = plan.rows.map(r => `Q${r.t} opens with ${r.open}, ${mono("x* = " + r.x)} leaves ${r.end}`).join("; ");
+      const others = [];
+      for (let s = 1; s <= d.W; s++) { const v = ev.snap.value[INST.id(1, s)]; if (v !== INF) others.push(`${f(INST.id(1, s))} ${mono("= " + v)}`); }
+      const sens = others.length ? ` The Q1 table also answers a question the plan does not: the cost of the year for any opening stock, ${joinAnd(others)}, at no extra work.` : "";
+      return { kicker: `Done · f1(0) = ${ev.total}`, html:
+        `Trace forward from Q1 with an empty warehouse, reading ${mono("x*")} and <b>Next</b> in each table: ${steps}. ` +
+        `The plan is to produce ${mono(plan.rows.map(r => r.x).join(", "))} lots: ${plural(plan.setups, "setup")} at ${d.K} plus ${plural(plan.lotQuarters, "lot-quarter")} of holding at ${d.h} ` +
+        `come to <b>${ev.total}</b> thousand euros on top of the fixed production cost.${sens}` };
+    }
+  }
+}
+
+function hpPlan(path) {
+  const d = INST.data, rows = [];
+  let setups = 0, lotQuarters = 0;
+  for (let k = 0; k + 1 < path.length; k++) {
+    const { t, s } = INST.ts(path[k]), sN = INST.ts(path[k + 1]).s, x = sN - s + d.d[t - 1];
+    const cost = INST.cost(x, sN);
+    rows.push({ t, open: s, x, dem: d.d[t - 1], end: sN, cost });
+    if (x > 0) setups++; lotQuarters += sN;
+  }
+  return { rows, setups, lotQuarters };
+}
+
+/* ---------------------------------------------------------------------------
+   5.  Steps from events
+--------------------------------------------------------------------------- */
+function buildSteps() {
+  const steps = [];
+  const narrate = { route: narrateRoute, hp: narrateHp }[INST.key];
+  // candState = the node currently being evaluated: its arcs, the candidate rows
+  // evaluated so far, the best choice so far, and whether it has been closed.
+  let candState = null;
+  TRACE.events.forEach(ev => {
+    const n = narrate(ev);
+    if (ev.type === "open") candState = { node: ev.node, arcs: ev.arcs, rows: [], best: null, closed: false };
+    if (ev.type === "candidate") { candState.rows.push(ev); candState.best = ev.bestVia; }
+    const nodeLevelUnreachable = ev.type === "unreachable" && ev.path === undefined;
+    if ((ev.type === "close" || nodeLevelUnreachable) && candState) candState.closed = true;
+    steps.push({ kicker: n.kicker, html: n.html, ev, snap: ev.snap, cand: candState ? clone(candState) : null });
+  });
+  return steps;
+}
+
+/* ---------------------------------------------------------------------------
+   6.  Renderers - network
+--------------------------------------------------------------------------- */
+function markerDefs() {
+  let s = `<defs><filter id="nodeglow" x="-60%" y="-60%" width="220%" height="220%">
+    <feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>`;
+  Object.keys(COL).forEach(k => {
+    s += `<marker id="arr-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L10,5 L0,10 z" fill="${COL[k]}"/></marker>`;
+  });
+  return s + `</defs>`;
+}
+
+function arcStyle(a, step) {
+  // returns { key, width, dash } for an arc, by the current step (backward recursion:
+  // the node being solved is the arc's tail)
+  const ev = step.ev, snap = step.snap;
+  if (ev.type === "done" && ev.path) {
+    for (let i = 1; i < ev.path.length; i++)
+      if (ev.path[i - 1] === a.from && ev.path[i] === a.to) return { key: "good", width: 4.5 };
+  }
+  if (ev.type === "candidate" && ev.node === a.from && ev.other === a.to) return { key: "enter", width: 4 };
+  if (snap.via[a.from] === a.to) return { key: "accent", width: 3 };                       // via arcs of solved nodes
+  if (step.cand && !step.cand.closed && step.cand.node === a.from && step.cand.best === a.to) return { key: "accent", width: 3, dash: "7 5" };
+  return { key: "border", width: 1.8 };
+}
+
+function nodeVisual(id, step) {
+  const ev = step.ev, snap = step.snap;
+  const solved = snap.solved.includes(id);
+  const open = step.cand && !step.cand.closed && step.cand.node === id;
+  let fill = "var(--panel)", stroke = "var(--faint)", txt = "var(--muted)";
+  if (solved && snap.value[id] === INF) { fill = "var(--panel)"; stroke = "var(--leave)"; txt = "var(--leave)"; }
+  else if (solved) { fill = "var(--accent)"; stroke = "var(--accent)"; txt = "var(--bg)"; }
+  else if (open) { stroke = "var(--accent)"; txt = "var(--text)"; }
+  if (ev.type === "done" && ev.path && ev.path.includes(id)) { fill = "var(--good)"; stroke = "var(--good)"; txt = "var(--bg)"; }
+  const isOther = ev.type === "candidate" && ev.other === id;
+  return { fill, stroke, txt, open, solved, isOther };
+}
+
+function valueLabel(id, snap) {
+  if (!snap.solved.includes(id)) return "?";
+  return snap.value[id] === INF ? "–" : String(snap.value[id]);
+}
+
+function nodeCircle(id, label, p, v) {
+  let s = "";
+  if (v.open) s += `<circle cx="${p.x}" cy="${p.y}" r="${R + 6}" fill="none" stroke="var(--accent)" stroke-width="1.5" opacity="0.6" filter="url(#nodeglow)"/>`;
+  if (v.isOther) s += `<circle cx="${p.x}" cy="${p.y}" r="${R + 6}" fill="none" stroke="var(--enter)" stroke-width="2" opacity="0.8"/>`;
+  s += `<circle cx="${p.x}" cy="${p.y}" r="${R}" fill="${v.fill}" stroke="${v.stroke}" stroke-width="2"/>`;
+  s += `<text x="${p.x}" y="${p.y + 6}" fill="${v.txt}" font-size="17" font-weight="700" text-anchor="middle" font-family="var(--font-ui)">${label}</text>`;
+  return s;
+}
+
+function valuePill(cx, cy, lab, solved) {
+  const lw = lab.length * 8 + 12;
+  return `<rect x="${cx - lw / 2}" y="${cy - 10}" width="${lw}" height="20" rx="6" fill="var(--panel-2)" stroke="${solved ? "var(--accent)" : "var(--border-2)"}"/>` +
+         `<text x="${cx}" y="${cy + 4}" fill="${solved ? "var(--accent)" : "var(--faint)"}" font-size="12.5" font-weight="650" text-anchor="middle" font-family="var(--font-mono)">${lab}</text>`;
+}
+
+// Put each arc's cost label where it collides least with other labels, other arcs
+// and the nodes: a greedy pass over a few positions along the arc.
+function placeLabels(arcs, pos, nodeIds) {
+  const FR = [0.5, 0.4, 0.6, 0.3, 0.7, 0.22, 0.78];
+  const segs = arcs.map(a => ({ p: pos[a.from], q: pos[a.to] }));
+  const distSeg = (x, y, s) => {
+    const dx = s.q.x - s.p.x, dy = s.q.y - s.p.y, L2 = dx * dx + dy * dy || 1;
+    const t = Math.max(0, Math.min(1, ((x - s.p.x) * dx + (y - s.p.y) * dy) / L2));
+    return Math.hypot(x - s.p.x - t * dx, y - s.p.y - t * dy);
+  };
+  const placed = [], out = {};
+  arcs.forEach((a, i) => {
+    const p = segs[i].p, q = segs[i].q;
+    let best = null, bestScore = -Infinity;
+    FR.forEach(f => {
+      const x = p.x + (q.x - p.x) * f, y = p.y + (q.y - p.y) * f;
+      let score = Infinity;
+      placed.forEach(l => score = Math.min(score, Math.hypot(x - l.x, y - l.y)));
+      segs.forEach((s, j) => { if (j !== i) score = Math.min(score, distSeg(x, y, s) * 1.6); });
+      nodeIds.forEach(n => score = Math.min(score, Math.hypot(x - pos[n].x, y - pos[n].y) - R));
+      score -= Math.abs(f - 0.5) * 6;
+      if (score > bestScore) { bestScore = score; best = { x, y }; }
+    });
+    placed.push(best); out[`${a.from}>${a.to}`] = best;
+  });
+  return out;
+}
+
+function drawArc(a, step, label, closed) {
+  const p = POS[a.from], q = POS[a.to];
+  const dx = q.x - p.x, dy = q.y - p.y, L = Math.hypot(dx, dy) || 1, ux = dx / L, uy = dy / L;
+  let st = { key: "faint", width: 1.8 }, dash = closed ? "6 5" : "", op = closed ? 0.55 : 1;
+  if (!closed) { st = arcStyle(a, step); dash = st.dash || ""; }
+  const x1 = p.x + ux * R, y1 = p.y + uy * R, x2 = q.x - ux * (R + 2), y2 = q.y - uy * (R + 2);
+  let s = `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${COL[st.key]}" stroke-width="${st.width}" ${dash ? `stroke-dasharray="${dash}"` : ""} opacity="${op}" stroke-linecap="round" ${closed ? "" : `marker-end="url(#arr-${st.key})"`}/>`;
+  if (!label) return s;
+  const l = LBL[`${a.from}>${a.to}`] || { x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 };
+  const lw = label.length * 7.5 + 10;
+  const lc = closed ? "var(--faint)" : (st.key === "border" ? "var(--muted)" : COL[st.key]);
+  s += `<rect x="${l.x - lw / 2}" y="${l.y - 9}" width="${lw}" height="18" rx="5" fill="var(--panel)" stroke="${st.key === "border" || closed ? "var(--border)" : COL[st.key]}"/>`;
+  s += `<text x="${l.x}" y="${l.y + 4}" fill="${lc}" font-size="11.5" text-anchor="middle" font-family="var(--font-mono)">${label}</text>`;
+  return s;
+}
+
+function renderRouteNet(step) {
+  const d = INST.data, snap = step.snap;
+  let s = markerDefs();
+  d.layers.forEach((L, k) => {
+    s += `<text x="${POS[L[0]].x}" y="14" fill="var(--muted)" font-size="11" text-anchor="middle" font-family="var(--font-ui)">${d.columns[k]}</text>`;
+  });
+  d.arcs.forEach(a => s += drawArc(a, step, a.closed ? "closed" : String(a.c), !!a.closed));
+  MODEL.nodes.forEach(id => {
+    const p = POS[id], v = nodeVisual(id, step);
+    s += nodeCircle(id, id, p, v);
+    s += valuePill(p.x, p.y - R - 14, valueLabel(id, snap), v.solved && snap.value[id] !== INF);
+  });
+  document.getElementById("net").innerHTML = s;
+}
+
+function renderHpNet(step) {
+  const d = INST.data, T = INST.T, snap = step.snap;
+  let s = markerDefs();
+  for (let t = 1; t <= T; t++)
+    s += `<text x="${POS[INST.id(t, 0)].x}" y="14" fill="var(--muted)" font-size="11" text-anchor="middle" font-family="var(--font-ui)">Q${t} · demand ${d.d[t - 1]}</text>`;
+  s += `<text x="${POS[INST.id(T + 1, 0)].x}" y="14" fill="var(--muted)" font-size="11" text-anchor="middle" font-family="var(--font-ui)">year end</text>`;
+  // 27 labelled arcs are unreadable: label only the arcs that matter at this step
+  // (candidates, best choices, the plan); the tables carry every number anyway
+  MODEL.arcs.forEach(a => s += drawArc(a, step, arcStyle(a, step).key === "border" ? "" : String(a.c), false));
+  MODEL.nodes.forEach(id => {
+    const p = POS[id], v = nodeVisual(id, step), { s: st } = INST.ts(id);
+    s += nodeCircle(id, String(st), p, v);
+    s += valuePill(p.x, p.y - R - 14, valueLabel(id, snap), v.solved && snap.value[id] !== INF);
+  });
+  document.getElementById("net").innerHTML = s;
+}
+
+/* ---------------------------------------------------------------------------
+   7.  Renderers - right panel, shortest route
+--------------------------------------------------------------------------- */
+function renderValueTable(step) {
+  const snap = step.snap, cols = INST.columns();
+  const cur = step.cand && !step.cand.closed ? step.cand.node : (step.ev.type === "close" ? step.ev.node : null);
+  const cell = (c, solved, txt) => `<td class="rhs-col${c === cur ? " dp-col-cur" : ""}${solved ? "" : " dp-blank"}">${txt}</td>`;
+  let h = `<thead><tr><th class="basic-label">Node</th>`;
+  cols.forEach(c => h += `<th class="rhs-col ${c === cur ? "dp-col-cur" : ""}">${c}</th>`);
+  h += `</tr></thead><tbody><tr><td class="basic-label">stage</td>`;
+  cols.forEach(c => h += cell(c, true, INST.stageOf(c)));
+  h += `</tr><tr><td class="basic-label">g(i)</td>`;
+  cols.forEach(c => { const solved = snap.solved.includes(c); h += cell(c, solved, solved ? fmtV(snap.value[c]) : "·"); });
+  h += `</tr><tr><td class="basic-label">via</td>`;
+  cols.forEach(c => { const solved = snap.solved.includes(c); h += cell(c, solved, solved ? (snap.via[c] === null ? "–" : snap.via[c]) : "·"); });
+  h += `</tr></tbody>`;
+  document.getElementById("values").innerHTML = h;
+}
+
+function renderCandTable(step) {
+  const cs = step.cand, box = document.getElementById("cands");
+  document.getElementById("cand-node").textContent = cs ? cs.node : "–";
+  if (!cs) { box.innerHTML = `<tbody><tr><td class="dp-blank" style="text-align:left">Nothing to evaluate at the terminal node.</td></tr></tbody>`; return; }
+  let h = `<thead><tr><th>arc</th><th class="rhs-col">cost</th><th class="rhs-col">g(next)</th><th class="rhs-col">total</th><th></th></tr></thead><tbody>`;
+  cs.arcs.forEach((a, i) => {
+    const row = cs.rows[i];                       // undefined until this candidate is evaluated
+    const isCur = step.ev.type === "candidate" && cs.rows.length === i + 1;
+    let cls = "";
+    if (row && a.other === cs.best) cls = "col-enter";   // the best choice so far (unique: one arc per neighbour)
+    else if (row) cls = "dp-lose";
+    h += `<tr class="${isCur ? "dj-row-cur" : ""}"><td style="text-align:left">${a.from} → ${a.to}</td>` +
+         `<td class="rhs-col">${a.c}</td>` +
+         `<td class="rhs-col ${cls}">${row ? fmtV(row.otherValue) : "·"}</td>` +
+         `<td class="rhs-col ${cls}">${row ? fmtV(row.total) : "·"}</td>` +
+         `<td style="text-align:left;color:var(--muted);font-size:12px">${row ? (row.tie ? "tie" : (cls === "col-enter" ? "best" : "")) : ""}</td></tr>`;
+  });
+  h += `</tbody>`;
+  box.innerHTML = h;
+}
+
+function renderStatsRoute(step) {
+  const ev = step.ev, snap = step.snap;
+  let node = "–", cand = "–", comp = "–", compCol = "var(--text)";
+  if (step.cand && !step.cand.closed) node = step.cand.node;
+  if (ev.type === "close") node = `${ev.node} = ${fmtV(ev.value)}`;
+  if (ev.type === "candidate") {
+    cand = `${ev.node} → ${ev.other}`;
+    comp = `${ev.c} + ${fmtV(ev.otherValue)} = ${fmtV(ev.total)}`;
+    compCol = ev.isBest ? "var(--enter)" : "var(--leave)";
+  }
+  if (ev.type === "done") node = `${ev.node} = ${fmtV(ev.total)}`;
+  document.getElementById("stats-route").innerHTML = statTiles([
+    ["Current node", node], ["Candidate", cand], ["Arithmetic", comp, compCol], ["Solved", snap.solved.join(", ")]]);
+}
+
+function statTiles(items) {
+  return items.map(([label, value, col]) =>
+    `<div class="stat"><div class="stat-label">${label}</div><div class="stat-value" ${col ? `style="color:${col}"` : ""}>${value}</div></div>`).join("");
+}
+
+function renderResultRoute(step) {
+  const ev = step.ev, box = document.getElementById("result-route");
+  let h = `<p class="panel-title" style="margin-top:18px">Cheapest route</p>`;
+  if (ev.type === "done") {
+    h += `<p style="margin:0;font-size:14px">${mono(ev.path.join(" → "))} at cost <span class="mono" style="color:var(--good)">${ev.total}</span>, ` +
+         `that is ${INST.euros(ev.total)} per container. Read forwards from node ${INST.source}: each node's <b>via</b> entry is the next node on the route.</p>`;
+  } else if (ev.type === "unreachable" && ev.path === null) {
+    h += `<p style="margin:0;font-size:14px;color:var(--leave)">Node ${INST.target} cannot be reached from node ${INST.source} with the open arcs.</p>`;
+  } else {
+    h += `<p style="color:var(--muted);font-size:13.5px;margin:0">Not known yet - node ${INST.source} is not solved.</p>`;
+  }
+  box.innerHTML = h;
+}
+
+/* ---------------------------------------------------------------------------
+   8.  Renderers - right panel, production planning
+--------------------------------------------------------------------------- */
+function renderHpTables(step) {
+  const d = INST.data, T = INST.T, snap = step.snap, ev = step.ev, cs = step.cand;
+  const curNode = cs && !cs.closed ? cs.node : ((ev.type === "close" || (ev.type === "unreachable" && ev.path === undefined)) ? ev.node : null);
+  const readNode = ev.type === "candidate" ? ev.other : null;      // the next-stage row being read
+  let h = "";
+  for (let t = T; t >= 1; t--) {
+    const dem = d.d[t - 1];
+    const active = curNode && INST.ts(curNode).t === t;
+    h += `<p class="panel-title" style="margin-top:${t === T ? 0 : 16}px${active ? ";color:var(--accent)" : ""}">Q${t} · demand ${dem} ` +
+         `<span class="dj-tblnote">f<sub>${t}</sub>(s) = min<sub>x</sub> { c(s, x) + f<sub>${t + 1}</sub>(s + x − ${dem}) }</span></p>`;
+    h += `<div class="tableau-scroll"><table class="tableau dp-cand"><thead><tr><th class="basic-label">Stock s</th>`;
+    for (let x = 0; x <= d.cap; x++) h += `<th class="rhs-col">x=${x}</th>`;
+    h += `<th class="rhs-col">x*</th><th class="rhs-col">f<sub>${t}</sub>(s)</th><th class="rhs-col">Next</th></tr></thead><tbody>`;
+    for (let s = 0; s <= d.W; s++) {
+      const id = INST.id(t, s), solved = snap.solved.includes(id), isCur = id === curNode, isRead = id === readNode;
+      h += `<tr class="${isCur ? "dj-row-cur" : ""}"><td class="basic-label">${s}</td>`;
+      for (let x = 0; x <= d.cap; x++) {
+        const arc = INST.arcAt(t, s, x);
+        let txt = "–", cls = "rhs-col dp-blank";
+        if (arc) {
+          let total = null;
+          if (solved) total = arc.c + snap.value[arc.to];
+          else if (isCur && cs) { const row = cs.rows.find(r => r.other === arc.to); if (row) total = row.total; }
+          if (total === null) txt = "·";
+          else if (total === INF) { txt = "∞"; cls = "rhs-col dp-lose"; }
+          else {
+            txt = String(total);
+            const bestVia = solved ? snap.via[id] : cs.best;
+            cls = "rhs-col " + (bestVia === arc.to ? "col-enter" : "dp-lose");
+          }
+          if (ev.type === "candidate" && isCur && ev.other === arc.to) cls += " dp-col-cur";
+        }
+        h += `<td class="${cls}">${txt}</td>`;
+      }
+      const fCls = isRead ? " dp-col-cur" : "";
+      if (solved && snap.value[id] !== INF) {
+        const sN = INST.ts(snap.via[id]).s, x = sN - s + dem;
+        h += `<td class="rhs-col col-enter">${x}</td><td class="rhs-col${fCls}"><b>${snap.value[id]}</b></td><td class="rhs-col">${sN}</td>`;
+      } else if (solved) {
+        h += `<td class="rhs-col dp-blank">–</td><td class="rhs-col dp-blank${fCls}">–</td><td class="rhs-col dp-blank">–</td>`;
+      } else {
+        h += `<td class="rhs-col dp-blank">·</td><td class="rhs-col dp-blank">·</td><td class="rhs-col dp-blank">·</td>`;
+      }
+      h += `</tr>`;
+    }
+    h += `</tbody></table></div>`;
+  }
+  document.getElementById("hp-tables").innerHTML = h;
+}
+
+function renderStatsHp(step) {
+  const ev = step.ev, snap = step.snap, T = INST.T, W = INST.data.W;
+  let state = "–", dec = "–", comp = "–", compCol = "var(--text)";
+  const node = step.cand && !step.cand.closed ? step.cand.node : ((ev.type === "close" || (ev.type === "unreachable" && ev.path === undefined)) ? ev.node : null);
+  if (node) { const { t, s } = INST.ts(node); state = `Q${t}, s = ${s}`; }
+  if (ev.type === "candidate") {
+    dec = `x = ${INST.xOf(ev.node, ev.other)}`;
+    comp = `${ev.c} + ${fmtV(ev.otherValue)} = ${fmtV(ev.total)}`;
+    compCol = ev.isBest ? "var(--enter)" : "var(--leave)";
+  }
+  if (ev.type === "close") { dec = `x* = ${INST.xOf(ev.node, ev.via)}`; comp = `f = ${ev.value}`; }
+  if (ev.type === "done") { state = "Q1, s = 0"; comp = `f = ${ev.total}`; }
+  const rows = snap.solved.filter(n => INST.ts(n).t <= T).length;
+  document.getElementById("stats-hp").innerHTML = statTiles([
+    ["Current row", state], ["Decision", dec], ["Arithmetic", comp, compCol], ["Rows solved", `${rows} of ${T * (W + 1)}`]]);
+}
+
+function renderResultHp(step) {
+  const ev = step.ev, box = document.getElementById("result-hp"), d = INST.data;
+  let h = `<p class="panel-title" style="margin-top:18px">Production plan</p>`;
+  if (ev.type === "done") {
+    const plan = hpPlan(ev.path);
+    h += `<table class="tableau" style="margin-bottom:10px"><thead><tr><th class="basic-label">Quarter</th><th class="rhs-col">Opening stock</th><th class="rhs-col">Produced</th><th class="rhs-col">Demand</th><th class="rhs-col">Ending stock</th><th class="rhs-col">Cost (k€)</th></tr></thead><tbody>`;
+    plan.rows.forEach(r => h += `<tr><td class="basic-label">Q${r.t}</td><td class="rhs-col">${r.open}</td><td class="rhs-col ${r.x ? "col-enter" : "dp-blank"}">${r.x || "–"}</td><td class="rhs-col">${r.dem}</td><td class="rhs-col">${r.end}</td><td class="rhs-col">${r.cost}</td></tr>`);
+    h += `</tbody></table>`;
+    h += `<p style="margin:0;font-size:14px">${plan.setups} × ${d.K} setup + ${plan.lotQuarters} × ${d.h} holding = <span class="mono" style="color:var(--good)">${ev.total}</span> thousand euros, ` +
+         `on top of the production cost, which is the same under every plan.</p>`;
+  } else if (ev.type === "unreachable" && ev.path === null) {
+    h += `<p style="margin:0;font-size:14px;color:var(--leave)">No feasible plan from an empty warehouse with these data.</p>`;
+  } else {
+    h += `<p style="color:var(--muted);font-size:13.5px;margin:0">Not known yet - the Q1 row for an empty warehouse is not solved.</p>`;
+  }
+  box.innerHTML = h;
+}
+
+function renderStrip() {
+  const el = document.getElementById("strip");
+  if (INST.key === "route") {
+    const gr = INST.greedy(), n = INST.data.layers.length - 1;
+    el.innerHTML = `Every arc leads to a higher-numbered node, so the nodes are solved ${mono(INST.order.slice(0, -1).reverse().join(", "))}: stage ${n} back to stage 1, every successor known when needed.` +
+      (gr.complete ? ` · Cheapest arc on every leg: ${mono(gr.path.join(" → "))} at ${mono(gr.cost)}.` : "");
+  } else {
+    const d = INST.data;
+    el.innerHTML = `Columns are the quarters, rows the opening stock ${mono("s")} (the number in the node). An arc is a production quantity ${mono("x")}; ` +
+      `the arcs in play are labelled with the quarter's cost ${mono(`c(s, x) = ${d.K}·[x > 0] + ${d.h}·s'`)}. Capacity ${mono(d.cap)} lots, warehouse ${mono(d.W)} lots, the year must end empty.`;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   9.  Editors
+--------------------------------------------------------------------------- */
+function renderEditor() {
+  const box = document.getElementById("editor");
+  document.getElementById("editor-title").textContent = INST.editorTitle;
+  let h;
+  if (INST.key === "route") {
+    const d = INST.data;
+    h = `<div class="dj-ed-row dj-ed-head"><span>Arc</span><span>Cost</span><span>Closed</span></div>`;
+    d.arcs.forEach((a, i) => {
+      h += `<div class="dj-ed-row"><span class="mono">${a.from} → ${a.to}</span>` +
+           `<input type="number" min="0" step="1" value="${a.c}" data-i="${i}" class="dj-len" ${a.closed ? "disabled" : ""}>` +
+           `<input type="checkbox" data-i="${i}" class="dj-closed" ${a.closed ? "checked" : ""}></div>`;
+    });
+    h += `<div class="dj-ed-actions"><button class="btn btn-primary" id="ed-apply">Apply</button>` +
+         `<button class="btn" id="ed-reset">Reset to script values</button>` +
+         `<span class="dj-ed-note">Costs in hundreds of euros per container. Closing an arc drops that connection; a node with no open arc out gets g = ∞.</span></div>`;
+  } else {
+    const d = INST.data;
+    h = `<div class="dp-ed-grid"><div>`;
+    h += `<div class="dj-ed-row dj-ed-head"><span>Quarter</span><span>Demand (lots)</span><span></span></div>`;
+    d.d.forEach((x, i) => h += `<div class="dj-ed-row"><span class="mono">Q${i + 1}</span><input type="number" min="0" step="1" value="${x}" data-i="${i}" class="hp-dem"><span></span></div>`);
+    h += `</div><div>`;
+    h += `<div class="dj-ed-row dj-ed-head"><span>Limit</span><span>Value</span><span></span></div>`;
+    h += `<div class="dj-ed-row"><span>Capacity</span><input type="number" min="0" max="9" step="1" value="${d.cap}" id="ed-cap"><span>lots per quarter</span></div>`;
+    h += `<div class="dj-ed-row"><span>Warehouse</span><input type="number" min="0" max="5" step="1" value="${d.W}" id="ed-W"><span>lots at quarter end</span></div>`;
+    h += `<div class="dj-ed-row"><span>Setup K</span><input type="number" min="0" step="1" value="${d.K}" id="ed-K"><span>per run</span></div>`;
+    h += `<div class="dj-ed-row"><span>Holding h</span><input type="number" min="0" step="1" value="${d.h}" id="ed-h"><span>per lot and quarter</span></div>`;
+    h += `</div></div>`;
+    h += `<div class="dj-ed-actions"><button class="btn btn-primary" id="ed-apply">Apply</button>` +
+         `<button class="btn" id="ed-reset">Reset to script values</button>` +
+         `<span class="dj-ed-note">Lots of 100 units, money in thousands of euros. A larger warehouse adds a row to every table, a larger capacity adds a column.</span></div>`;
+  }
+  box.innerHTML = h;
+  box.querySelectorAll(".dj-closed").forEach(cb => cb.onchange = () => {
+    box.querySelector(`.dj-len[data-i="${cb.dataset.i}"]`).disabled = cb.checked;
+  });
+  document.getElementById("ed-apply").onclick = applyEditor;
+  document.getElementById("ed-reset").onclick = () => {
+    INST.data = clone(DEFAULTS[INST.key]);
+    loadInstance(INST.key); setEditorCollapsed(true);
+  };
+  box.querySelectorAll("input").forEach(inp => inp.addEventListener("keydown", e => { if (e.key === "Enter") applyEditor(); }));
+}
+
+function applyEditor() {
+  const box = document.getElementById("editor");
+  const data = clone(INST.data);
+  const num = (v, lo, hi) => { v = Math.round(Number(v)); if (!Number.isFinite(v)) v = lo; return Math.max(lo, Math.min(hi, v)); };
+  if (INST.key === "route") {
+    box.querySelectorAll(".dj-len").forEach(inp => data.arcs[+inp.dataset.i].c = num(inp.value, 0, 1e6));
+    box.querySelectorAll(".dj-closed").forEach(cb => data.arcs[+cb.dataset.i].closed = cb.checked);
+  } else {
+    box.querySelectorAll(".hp-dem").forEach(inp => data.d[+inp.dataset.i] = num(inp.value, 0, 99));
+    data.cap = num(document.getElementById("ed-cap").value, 0, 9);
+    data.W = num(document.getElementById("ed-W").value, 0, 5);
+    data.K = num(document.getElementById("ed-K").value, 0, 1e6);
+    data.h = num(document.getElementById("ed-h").value, 0, 1e6);
+  }
+  INST.data = data;
+  loadInstance(INST.key);
+}
+
+function setEditorCollapsed(collapsed) {
+  const pPanel = document.getElementById("editor-panel");
+  const pToggle = document.getElementById("editor-toggle");
+  pPanel.classList.toggle("collapsed", collapsed);
+  pToggle.setAttribute("aria-expanded", String(!collapsed));
+  pToggle.querySelector(".chevron").textContent = collapsed ? "▸" : "▾";
+}
+
+/* ---------------------------------------------------------------------------
+   10.  Step controller
+--------------------------------------------------------------------------- */
+function renderDots() {
+  let h = "";
+  for (let i = 0; i < STEPS.length; i++) h += `<span class="dot ${i === cur ? "active" : (i < cur ? "done" : "")}"></span>`;
+  document.getElementById("dots").innerHTML = h;
+}
+
+function renderJumps() {
+  const J = INST.jumps();
+  document.getElementById("jumps").innerHTML = `<span class="jl">Jump to</span>` +
+    J.map(j => `<button class="btn" data-at="${j.at}">${j.label}</button>`).join("");
+  document.querySelectorAll("#jumps .btn").forEach(b => b.onclick = () => show(+b.dataset.at));
+}
+
+function show(i) {
+  cur = Math.max(0, Math.min(STEPS.length - 1, i));
+  const step = STEPS[cur];
+  document.getElementById("narr-kicker").textContent = step.kicker;
+  document.getElementById("narr-text").innerHTML = step.html;
+  if (INST.key === "route") {
+    renderRouteNet(step); renderValueTable(step); renderCandTable(step); renderStatsRoute(step); renderResultRoute(step);
+  } else {
+    renderHpNet(step); renderHpTables(step); renderStatsHp(step); renderResultHp(step);
+  }
+  document.getElementById("step-now").textContent = cur + 1;
+  document.getElementById("btn-prev").disabled = cur === 0;
+  document.getElementById("btn-next").disabled = cur === STEPS.length - 1;
+  renderDots();
+  try { history.replaceState(null, "", `#${INST.key}-${cur + 1}`); } catch (e) { /* file:// may refuse; harmless */ }
+}
+
+function loadInstance(key) {
+  INST = INSTANCES[key];
+  MODEL = INST.build();
+  POS = INST.positions();
+  LBL = placeLabels(INST.key === "route" ? INST.data.arcs : MODEL.arcs, POS, MODEL.nodes);
+  TRACE = DP.solve(MODEL);
+  STEPS = buildSteps();
+  cur = 0;
+  document.getElementById("step-total").textContent = STEPS.length;
+  document.getElementById("subtitle").textContent = INST.subtitle;
+  document.getElementById("net-title").textContent = INST.netTitle;
+  document.getElementById("right-route").style.display = key === "route" ? "" : "none";
+  document.getElementById("right-hp").style.display = key === "hp" ? "" : "none";
+  const badge = document.getElementById("badge"), def = INST.isDefault();
+  badge.textContent = def ? "script instance" : "edited";
+  badge.classList.toggle("edited", !def);
+  document.querySelectorAll("#variant-switch .btn").forEach(b => b.classList.toggle("btn-primary", b.dataset.inst === key));
+  renderStrip();
+  renderEditor();
+  renderJumps();
+  show(0);
+}
+
+function init() {
+  document.querySelectorAll("#variant-switch .btn").forEach(b => b.onclick = () => { loadInstance(b.dataset.inst); setEditorCollapsed(true); });
+  document.getElementById("btn-next").onclick  = () => show(cur + 1);
+  document.getElementById("btn-prev").onclick  = () => show(cur - 1);
+  document.getElementById("btn-reset").onclick = () => show(0);
+  document.getElementById("editor-toggle").onclick = () =>
+    setEditorCollapsed(!document.getElementById("editor-panel").classList.contains("collapsed"));
+  document.addEventListener("keydown", e => {
+    if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+    if (e.key === "ArrowRight") show(cur + 1);
+    if (e.key === "ArrowLeft")  show(cur - 1);
+    if (e.key === "Home")       show(0);
+  });
+  // deep links: #route-7, #hp-12, or plain #7 (shortest route)
+  const m = /^#(?:(route|hp)-)?(\d+)$/.exec(location.hash);
+  loadInstance(m && m[1] ? m[1] : "route");
+  if (m) show(+m[2] - 1);
+}
+init();
+</script>
+</body>
+</html>
