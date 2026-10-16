@@ -12,7 +12,7 @@
 
   <header class="dash-header">
     <p class="dash-eyebrow">Optimization for SCM · Dynamic Programming</p>
-    <h1 class="dash-title">Bellman's Table, Step by Step <span class="dj-badge" id="badge">script instance</span></h1>
+    <h1 class="dash-title">Bellman's Table, Step by Step <span class="dj-badge edited" id="badge" style="display:none">edited</span></h1>
     <p class="dash-subtitle" id="subtitle"></p>
   </header>
 
@@ -871,9 +871,7 @@ function loadInstance(key) {
   document.getElementById("net-title").textContent = INST.netTitle;
   document.getElementById("right-route").style.display = key === "route" ? "" : "none";
   document.getElementById("right-hp").style.display = key === "hp" ? "" : "none";
-  const badge = document.getElementById("badge"), def = INST.isDefault();
-  badge.textContent = def ? "script instance" : "edited";
-  badge.classList.toggle("edited", !def);
+  document.getElementById("badge").style.display = INST.isDefault() ? "none" : "";
   document.querySelectorAll("#variant-switch .btn").forEach(b => b.classList.toggle("btn-primary", b.dataset.inst === key));
   renderStrip();
   renderEditor();

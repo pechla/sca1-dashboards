@@ -12,7 +12,7 @@
 
   <header class="dash-header">
     <p class="dash-eyebrow">Optimization for SCM · Network Flow Models</p>
-    <h1 class="dash-title">Dijkstra's Algorithm, Step by Step <span class="dj-badge" id="badge">script instance</span></h1>
+    <h1 class="dash-title">Dijkstra's Algorithm, Step by Step <span class="dj-badge edited" id="badge" style="display:none">edited</span></h1>
     <p class="dash-subtitle">The shortest route from town A to town E - watch the label table fill in one relaxation at a time, exactly as you would on paper.</p>
   </header>
 
@@ -410,10 +410,7 @@ function loadNetwork(net) {
   STEPS = buildSteps();
   cur = 0;
   document.getElementById("step-total").textContent = STEPS.length;
-  const badge = document.getElementById("badge");
-  const def = isDefault();
-  badge.textContent = def ? "script instance" : "edited";
-  badge.classList.toggle("edited", !def);
+  document.getElementById("badge").style.display = isDefault() ? "none" : "";
   renderEditor();
   show(0);
 }

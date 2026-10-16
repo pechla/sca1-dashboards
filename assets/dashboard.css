@@ -434,7 +434,7 @@ table.shadow tr.binding td { color: var(--text); }
 
 .dj-net { width: 100%; height: auto; display: block; }
 
-/* "script instance" / "edited" badge next to the title */
+/* "edited" badge next to the title; hidden while the instance matches the script */
 .dj-badge {
   display: inline-block; vertical-align: middle; margin-left: 10px;
   font-family: var(--font-mono); font-size: 11.5px; font-weight: 600; letter-spacing: .02em;
